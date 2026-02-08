@@ -1,13 +1,17 @@
 [package]
 name = "oci2rootfs-cli"
+description = "CLI tool for converting OCI container images to ext4 root filesystems"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [[bin]]
 name = "oci2rootfs"
 path = "src/main.rs"
 
 [dependencies]
-oci2rootfs = { path = "../oci2rootfs" }
+oci2rootfs.workspace = true
 clap = { version = "4", features = ["derive"] }
 tokio.workspace = true

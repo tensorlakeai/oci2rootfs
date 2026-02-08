@@ -1,7 +1,11 @@
 [package]
 name = "oci2rootfs"
+description = "Convert OCI container images to ext4 root filesystems"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 containerregistry.workspace = true

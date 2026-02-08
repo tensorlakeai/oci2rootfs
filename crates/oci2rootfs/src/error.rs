@@ -9,16 +9,16 @@ pub enum Error {
     Ext4(#[from] ext4_lwext4::Error),
 
     #[error("layout error: {0}")]
-    Layout(#[from] containerregistry_layout::Error),
+    Layout(#[from] containerregistry::layout::Error),
 
     #[error("image error: {0}")]
-    Image(#[from] containerregistry_image::Error),
+    Image(#[from] containerregistry::image::Error),
 
     #[error("registry error: {0}")]
-    Registry(#[from] containerregistry_registry::Error),
+    Registry(#[from] containerregistry::registry::Error),
 
     #[error("authentication error: {0}")]
-    Auth(#[from] containerregistry_auth::Error),
+    Auth(#[from] containerregistry::auth::Error),
 
     #[error("no matching manifest found for platform {0}")]
     NoManifest(String),

@@ -1,8 +1,8 @@
 use std::io::{Cursor, Read};
 
-use containerregistry_auth::AuthResolver;
-use containerregistry_image::{Descriptor, ImageConfig, ImageIndex, MediaType};
-use containerregistry_registry::{Client, ClientConfig, ManifestOrIndex, Reference};
+use containerregistry::auth::AuthResolver;
+use containerregistry::image::{Descriptor, ImageConfig, ImageIndex, MediaType};
+use containerregistry::registry::{Client, ClientConfig, ManifestOrIndex, Reference};
 use flate2::read::GzDecoder;
 
 use crate::error::{Error, Result};
@@ -67,7 +67,7 @@ impl PulledImage {
 pub async fn pull(reference_str: &str, config: &PullConfig) -> Result<PulledImage> {
     let reference: Reference = reference_str
         .parse()
-        .map_err(|e: containerregistry_registry::Error| Error::InvalidReference(e.to_string()))?;
+        .map_err(|e: containerregistry::registry::Error| Error::InvalidReference(e.to_string()))?;
 
     eprintln!(
         "Pulling {}/{} from {}",
@@ -140,7 +140,7 @@ async fn resolve_platform_manifest(
     reference: &Reference,
     index: &ImageIndex,
     config: &PullConfig,
-) -> Result<containerregistry_image::Manifest> {
+) -> Result<containerregistry::image::Manifest> {
     eprintln!("Resolving platform {}/{}", config.os, config.arch);
 
     let desc = index
@@ -167,7 +167,7 @@ async fn resolve_platform_manifest(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use containerregistry_image::Digest;
+    use containerregistry::image::Digest;
     use std::collections::BTreeMap;
     use std::io::Read;
 

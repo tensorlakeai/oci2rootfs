@@ -2,8 +2,8 @@ use std::fs;
 use std::io::Read;
 use std::path::Path;
 
-use containerregistry_image::{Descriptor, ImageConfig, ImageIndex, MediaType};
-use containerregistry_layout::Layout;
+use containerregistry::image::{Descriptor, ImageConfig, ImageIndex, MediaType};
+use containerregistry::layout::Layout;
 use flate2::read::GzDecoder;
 
 use crate::error::{Error, Result};

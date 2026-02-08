@@ -162,8 +162,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 
 [[package]]
+name = "containerregistry"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3f3585b81fff3dbfb72fbcb130e1727b407297300c43580dac7bcc2548db1f7"
+dependencies = [
+ "containerregistry-auth",
+ "containerregistry-image",
+ "containerregistry-layout",
+ "containerregistry-registry",
+]
+
+[[package]]
 name = "containerregistry-auth"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "476c0fada92a4c8014f2086ad33ebc9b1945bffc9733e086aea28f8fe4e9e904"
 dependencies = [
  "base64",
  "serde",
@@ -174,6 +188,8 @@ dependencies = [
 [[package]]
 name = "containerregistry-image"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "694ab28b4bbd88e6fd8fd948fffba0a50cf2f3e436556f67a97a32fbcbe44175"
 dependencies = [
  "hex",
  "serde",
@@ -185,6 +201,8 @@ dependencies = [
 [[package]]
 name = "containerregistry-layout"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "756a77dbff94b571626612a231491651f4ee02ff72c725436e69fea28686c672"
 dependencies = [
  "containerregistry-image",
  "serde",
@@ -195,6 +213,8 @@ dependencies = [
 [[package]]
 name = "containerregistry-registry"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54d47e85c90ee3fc6144f312abc18a7e592c3b72140126b9135c608626c8c31b"
 dependencies = [
  "containerregistry-auth",
  "containerregistry-image",
@@ -299,7 +319,9 @@ dependencies = [
 
 [[package]]
 name = "ext4-lwext4"
-version = "0.1.2"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9179b7121ddd37184afecbc523b7c094c9d3af5406c55e9d949d3d05cb2f07ff"
 dependencies = [
  "bitflags",
  "ext4-lwext4-sys",
@@ -309,7 +331,9 @@ dependencies = [
 
 [[package]]
 name = "ext4-lwext4-sys"
-version = "0.1.2"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a42be90894027151aca46dc08dfa2ca5fba02e604eaa22524ef2b472f0eba40f"
 dependencies = [
  "cc",
 ]
@@ -902,10 +926,7 @@ dependencies = [
 name = "oci2rootfs"
 version = "0.1.0"
 dependencies = [
- "containerregistry-auth",
- "containerregistry-image",
- "containerregistry-layout",
- "containerregistry-registry",
+ "containerregistry",
  "ext4-lwext4",
  "flate2",
  "serial_test",

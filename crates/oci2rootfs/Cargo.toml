@@ -4,10 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-containerregistry-image.workspace = true
-containerregistry-layout.workspace = true
-containerregistry-registry.workspace = true
-containerregistry-auth.workspace = true
+containerregistry.workspace = true
 tokio.workspace = true
 tar = "0.4"
 flate2 = "1.0"

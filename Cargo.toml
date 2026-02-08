@@ -1,0 +1,15 @@
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+containerregistry-image = { path = "../containerregistry-rs/crates/image" }
+containerregistry-layout = { path = "../containerregistry-rs/crates/layout" }
+containerregistry-registry = { path = "../containerregistry-rs/crates/registry" }
+containerregistry-auth = { path = "../containerregistry-rs/crates/auth" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+ext4-lwext4 = { path = "../ext4-rs/ext4-lwext4" }

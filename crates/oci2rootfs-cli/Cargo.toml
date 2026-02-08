@@ -1,0 +1,13 @@
+[package]
+name = "oci2rootfs-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "oci2rootfs"
+path = "src/main.rs"
+
+[dependencies]
+oci2rootfs = { path = "../oci2rootfs" }
+clap = { version = "4", features = ["derive"] }
+tokio.workspace = true

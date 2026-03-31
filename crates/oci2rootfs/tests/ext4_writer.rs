@@ -15,7 +15,7 @@ fn create_writer() -> (Ext4Writer, NamedTempFile) {
 #[test]
 #[serial]
 fn test_create_and_finish() {
-    let (writer, file) = create_writer();
+    let (mut writer, file) = create_writer();
     writer.finish().unwrap();
     let metadata = std::fs::metadata(file.path()).unwrap();
     assert_eq!(metadata.len(), TEST_SIZE);
@@ -24,7 +24,7 @@ fn test_create_and_finish() {
 #[test]
 #[serial]
 fn test_mkdir_and_exists() {
-    let (writer, _file) = create_writer();
+    let (mut writer, _file) = create_writer();
     writer.mkdir_p("/testdir", 0o755).unwrap();
     assert!(writer.exists("/testdir"));
     assert!(writer.is_dir("/testdir"));
@@ -34,7 +34,7 @@ fn test_mkdir_and_exists() {
 #[test]
 #[serial]
 fn test_mkdir_idempotent() {
-    let (writer, _file) = create_writer();
+    let (mut writer, _file) = create_writer();
     writer.mkdir_p("/testdir", 0o755).unwrap();
     writer.mkdir_p("/testdir", 0o700).unwrap(); // should not fail
     assert!(writer.is_dir("/testdir"));
@@ -44,7 +44,7 @@ fn test_mkdir_idempotent() {
 #[test]
 #[serial]
 fn test_write_file() {
-    let (writer, _file) = create_writer();
+    let (mut writer, _file) = create_writer();
     let data = b"hello world";
     writer
         .write_file("/hello.txt", &mut Cursor::new(data), 0o644, 0, 0)
@@ -56,7 +56,7 @@ fn test_write_file() {
 #[test]
 #[serial]
 fn test_write_file_overwrite() {
-    let (writer, _file) = create_writer();
+    let (mut writer, _file) = create_writer();
     writer
         .write_file("/file.txt", &mut Cursor::new(b"first"), 0o644, 0, 0)
         .unwrap();
@@ -70,7 +70,7 @@ fn test_write_file_overwrite() {
 #[test]
 #[serial]
 fn test_symlink() {
-    let (writer, _file) = create_writer();
+    let (mut writer, _file) = create_writer();
     writer
         .write_file("/target.txt", &mut Cursor::new(b"data"), 0o644, 0, 0)
         .unwrap();
@@ -82,7 +82,7 @@ fn test_symlink() {
 #[test]
 #[serial]
 fn test_link() {
-    let (writer, _file) = create_writer();
+    let (mut writer, _file) = create_writer();
     writer
         .write_file("/original.txt", &mut Cursor::new(b"data"), 0o644, 0, 0)
         .unwrap();
@@ -94,7 +94,7 @@ fn test_link() {
 #[test]
 #[serial]
 fn test_remove() {
-    let (writer, _file) = create_writer();
+    let (mut writer, _file) = create_writer();
     writer
         .write_file("/removeme.txt", &mut Cursor::new(b"data"), 0o644, 0, 0)
         .unwrap();
@@ -107,7 +107,7 @@ fn test_remove() {
 #[test]
 #[serial]
 fn test_rmdir() {
-    let (writer, _file) = create_writer();
+    let (mut writer, _file) = create_writer();
     writer.mkdir_p("/emptydir", 0o755).unwrap();
     assert!(writer.is_dir("/emptydir"));
     writer.rmdir("/emptydir").unwrap();
@@ -118,7 +118,7 @@ fn test_rmdir() {
 #[test]
 #[serial]
 fn test_list_dir() {
-    let (writer, _file) = create_writer();
+    let (mut writer, _file) = create_writer();
     writer.mkdir_p("/parent", 0o755).unwrap();
     writer
         .write_file("/parent/a.txt", &mut Cursor::new(b"a"), 0o644, 0, 0)
@@ -137,7 +137,7 @@ fn test_list_dir() {
 #[test]
 #[serial]
 fn test_set_permissions_and_owner() {
-    let (writer, _file) = create_writer();
+    let (mut writer, _file) = create_writer();
     writer
         .write_file("/perm.txt", &mut Cursor::new(b"data"), 0o644, 0, 0)
         .unwrap();

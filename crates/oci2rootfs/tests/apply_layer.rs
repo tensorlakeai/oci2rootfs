@@ -94,7 +94,7 @@ enum TarEntry {
 #[test]
 #[serial]
 fn test_apply_layer_regular_files() {
-    let (writer, _file) = create_writer();
+    let (mut writer, _file) = create_writer();
     let tar_data = build_tar(&[
         TarEntry::File {
             path: "hello.txt",
@@ -107,7 +107,7 @@ fn test_apply_layer_regular_files() {
             mode: 0o644,
         },
     ]);
-    apply_layer(Cursor::new(tar_data), &writer).unwrap();
+    apply_layer(Cursor::new(tar_data), &mut writer).unwrap();
     assert!(writer.exists("/hello.txt"));
     assert!(writer.exists("/world.txt"));
     writer.finish().unwrap();
@@ -116,7 +116,7 @@ fn test_apply_layer_regular_files() {
 #[test]
 #[serial]
 fn test_apply_layer_directories() {
-    let (writer, _file) = create_writer();
+    let (mut writer, _file) = create_writer();
     let tar_data = build_tar(&[
         TarEntry::Dir {
             path: "etc/",
@@ -127,7 +127,7 @@ fn test_apply_layer_directories() {
             mode: 0o755,
         },
     ]);
-    apply_layer(Cursor::new(tar_data), &writer).unwrap();
+    apply_layer(Cursor::new(tar_data), &mut writer).unwrap();
     assert!(writer.is_dir("/etc"));
     assert!(writer.is_dir("/etc/config"));
     writer.finish().unwrap();
@@ -136,7 +136,7 @@ fn test_apply_layer_directories() {
 #[test]
 #[serial]
 fn test_apply_layer_symlink() {
-    let (writer, _file) = create_writer();
+    let (mut writer, _file) = create_writer();
     let tar_data = build_tar(&[
         TarEntry::File {
             path: "target.txt",
@@ -148,7 +148,7 @@ fn test_apply_layer_symlink() {
             target: "/target.txt",
         },
     ]);
-    apply_layer(Cursor::new(tar_data), &writer).unwrap();
+    apply_layer(Cursor::new(tar_data), &mut writer).unwrap();
     assert!(writer.exists("/target.txt"));
     assert!(writer.exists("/link.txt"));
     writer.finish().unwrap();
@@ -157,7 +157,7 @@ fn test_apply_layer_symlink() {
 #[test]
 #[serial]
 fn test_apply_layer_hardlink() {
-    let (writer, _file) = create_writer();
+    let (mut writer, _file) = create_writer();
     let tar_data = build_tar(&[
         TarEntry::File {
             path: "original.txt",
@@ -169,7 +169,7 @@ fn test_apply_layer_hardlink() {
             target: "original.txt",
         },
     ]);
-    apply_layer(Cursor::new(tar_data), &writer).unwrap();
+    apply_layer(Cursor::new(tar_data), &mut writer).unwrap();
     assert!(writer.exists("/original.txt"));
     assert!(writer.exists("/hardlink.txt"));
     writer.finish().unwrap();
@@ -178,7 +178,7 @@ fn test_apply_layer_hardlink() {
 #[test]
 #[serial]
 fn test_apply_layer_whiteout_delete() {
-    let (writer, _file) = create_writer();
+    let (mut writer, _file) = create_writer();
 
     // Base layer: create a file
     let base = build_tar(&[TarEntry::File {
@@ -186,7 +186,7 @@ fn test_apply_layer_whiteout_delete() {
         data: b"config".to_vec(),
         mode: 0o644,
     }]);
-    apply_layer(Cursor::new(base), &writer).unwrap();
+    apply_layer(Cursor::new(base), &mut writer).unwrap();
     assert!(writer.exists("/etc/removeme.conf"));
 
     // Overlay layer: whiteout the file
@@ -195,7 +195,7 @@ fn test_apply_layer_whiteout_delete() {
         data: vec![],
         mode: 0o644,
     }]);
-    apply_layer(Cursor::new(overlay), &writer).unwrap();
+    apply_layer(Cursor::new(overlay), &mut writer).unwrap();
     assert!(!writer.exists("/etc/removeme.conf"));
 
     writer.finish().unwrap();
@@ -204,7 +204,7 @@ fn test_apply_layer_whiteout_delete() {
 #[test]
 #[serial]
 fn test_apply_layer_whiteout_opaque() {
-    let (writer, _file) = create_writer();
+    let (mut writer, _file) = create_writer();
 
     // Base layer: create files in a directory
     let base = build_tar(&[
@@ -223,7 +223,7 @@ fn test_apply_layer_whiteout_opaque() {
             mode: 0o644,
         },
     ]);
-    apply_layer(Cursor::new(base), &writer).unwrap();
+    apply_layer(Cursor::new(base), &mut writer).unwrap();
     assert!(writer.exists("/var/cache/a.txt"));
     assert!(writer.exists("/var/cache/b.txt"));
 
@@ -233,7 +233,7 @@ fn test_apply_layer_whiteout_opaque() {
         data: vec![],
         mode: 0o644,
     }]);
-    apply_layer(Cursor::new(overlay), &writer).unwrap();
+    apply_layer(Cursor::new(overlay), &mut writer).unwrap();
     assert!(!writer.exists("/var/cache/a.txt"));
     assert!(!writer.exists("/var/cache/b.txt"));
     assert!(writer.is_dir("/var/cache")); // directory itself still exists
@@ -244,7 +244,7 @@ fn test_apply_layer_whiteout_opaque() {
 #[test]
 #[serial]
 fn test_apply_layer_gzip() {
-    let (writer, _file) = create_writer();
+    let (mut writer, _file) = create_writer();
 
     let tar_data = build_tar(&[TarEntry::File {
         path: "compressed.txt",
@@ -260,7 +260,7 @@ fn test_apply_layer_gzip() {
     // apply_layer expects a tar stream, so we need to decompress first
     // (in the real flow, oci.rs/pull.rs handles decompression)
     let decoder = flate2::read::GzDecoder::new(Cursor::new(gzipped));
-    apply_layer(decoder, &writer).unwrap();
+    apply_layer(decoder, &mut writer).unwrap();
     assert!(writer.exists("/compressed.txt"));
 
     writer.finish().unwrap();

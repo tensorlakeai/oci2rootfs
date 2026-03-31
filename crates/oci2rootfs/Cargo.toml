@@ -14,7 +14,7 @@ tar = "0.4"
 flate2 = "1.0"
 zstd = "0.13"
 thiserror = "2"
-ext4-lwext4.workspace = true
+arcbox-ext4.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

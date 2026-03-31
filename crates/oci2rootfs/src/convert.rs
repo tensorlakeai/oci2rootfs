@@ -36,7 +36,7 @@ impl Converter {
 
         eprintln!("Resolved image with {} layers", image.layers.len());
 
-        let writer = Ext4Writer::create(&self.output, self.size)?;
+        let mut writer = Ext4Writer::create(&self.output, self.size)?;
 
         for (i, layer) in image.layers.iter().enumerate() {
             eprintln!(
@@ -46,7 +46,7 @@ impl Converter {
                 layer.digest
             );
             let reader = image.open_layer(layer)?;
-            apply_layer(reader, &writer)?;
+            apply_layer(reader, &mut writer)?;
         }
 
         writer.finish()?;
@@ -60,7 +60,7 @@ impl Converter {
 
         eprintln!("Pulled image with {} layers", image.layer_count());
 
-        let writer = Ext4Writer::create(&self.output, self.size)?;
+        let mut writer = Ext4Writer::create(&self.output, self.size)?;
 
         for (i, desc) in image.layer_descriptors().iter().enumerate() {
             eprintln!(
@@ -70,7 +70,7 @@ impl Converter {
                 desc.digest
             );
             let reader = image.open_layer(i)?;
-            apply_layer(reader, &writer)?;
+            apply_layer(reader, &mut writer)?;
         }
 
         writer.finish()?;

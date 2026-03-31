@@ -5,8 +5,8 @@ pub enum Error {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("ext4 error: {0}")]
-    Ext4(#[from] ext4_lwext4::Error),
+    #[error("ext4 format error: {0}")]
+    Ext4Format(#[from] arcbox_ext4::error::FormatError),
 
     #[error("layout error: {0}")]
     Layout(#[from] containerregistry::layout::Error),

@@ -12,6 +12,6 @@ repository = "https://github.com/arcbox-labs/oci2rootfs"
 [workspace.dependencies]
 oci2rootfs = { version = "0.1.0", path = "crates/oci2rootfs" }
 
-containerregistry = "0.1"
+containerregistry = "0.1.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-ext4-lwext4 = "0.1"
+arcbox-ext4 = "0.1.1"

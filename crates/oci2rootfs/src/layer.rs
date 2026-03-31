@@ -8,7 +8,7 @@ use crate::ext4::Ext4Writer;
 /// Apply a single OCI layer (tar stream) to the ext4 writer.
 ///
 /// Processes tar entries in order, handling whiteout files per the OCI spec.
-pub fn apply_layer(reader: impl Read, writer: &Ext4Writer) -> Result<()> {
+pub fn apply_layer(reader: impl Read, writer: &mut Ext4Writer) -> Result<()> {
     let mut archive = Archive::new(reader);
 
     for entry_result in archive.entries()? {
@@ -149,7 +149,7 @@ fn normalize_path(path: &std::path::Path) -> String {
 }
 
 /// Delete a file or directory from the ext4 image.
-fn delete_entry(writer: &Ext4Writer, path: &str) -> Result<()> {
+fn delete_entry(writer: &mut Ext4Writer, path: &str) -> Result<()> {
     if writer.is_dir(path) {
         writer.rmdir(path)?;
     } else if writer.exists(path) {
@@ -159,7 +159,7 @@ fn delete_entry(writer: &Ext4Writer, path: &str) -> Result<()> {
 }
 
 /// Clear all entries in a directory (opaque whiteout).
-fn clear_directory(writer: &Ext4Writer, dir: &str) -> Result<()> {
+fn clear_directory(writer: &mut Ext4Writer, dir: &str) -> Result<()> {
     if !writer.is_dir(dir) {
         return Ok(());
     }

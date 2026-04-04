@@ -4,12 +4,13 @@ use crate::error::Result;
 use crate::ext4::Ext4Writer;
 use crate::layer::apply_layer;
 use crate::oci;
+use crate::overlay2;
 use crate::pull::{self, PullConfig};
 
 /// Default image size: 512 MiB.
 const DEFAULT_SIZE: u64 = 512 * 1024 * 1024;
 
-/// Converts an OCI Image Layout directory to an ext4 rootfs image.
+/// Converts container images to ext4 rootfs images.
 pub struct Converter {
     output: PathBuf,
     size: u64,
@@ -30,23 +31,35 @@ impl Converter {
         self
     }
 
-    /// Convert from a local OCI Image Layout directory.
-    pub fn convert_local(self, oci_dir: impl AsRef<Path>) -> Result<()> {
-        let image = oci::resolve(oci_dir)?;
-
-        eprintln!("Resolved image with {} layers", image.layers.len());
-
+    /// Convert from a local image source.
+    ///
+    /// Auto-detects the format:
+    /// - Docker overlay2 layer directory (`diff/` + `link`)
+    /// - OCI Image Layout (`oci-layout` + `index.json`)
+    pub fn convert_local(self, source: impl AsRef<Path>) -> Result<()> {
+        let source = source.as_ref();
         let mut writer = Ext4Writer::create(&self.output, self.size)?;
 
-        for (i, layer) in image.layers.iter().enumerate() {
+        if overlay2::is_overlay2(source) {
+            let archive = overlay2::resolve(source)?;
             eprintln!(
-                "Applying layer {}/{}: {}",
-                i + 1,
-                image.layers.len(),
-                layer.digest
+                "Resolved overlay2 image with {} layers",
+                archive.layer_count()
             );
-            let reader = image.open_layer(layer)?;
-            apply_layer(reader, &mut writer)?;
+            archive.apply_to(&mut writer)?;
+        } else {
+            let image = oci::resolve(source)?;
+            eprintln!("Resolved OCI image with {} layers", image.layers.len());
+            for (i, layer) in image.layers.iter().enumerate() {
+                eprintln!(
+                    "Applying layer {}/{}: {}",
+                    i + 1,
+                    image.layers.len(),
+                    layer.digest
+                );
+                let reader = image.open_layer(layer)?;
+                apply_layer(reader, &mut writer)?;
+            }
         }
 
         writer.finish()?;

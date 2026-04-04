@@ -3,6 +3,7 @@ pub mod error;
 pub mod ext4;
 pub mod layer;
 pub mod oci;
+pub mod overlay2;
 pub mod pull;
 
 pub use convert::Converter;

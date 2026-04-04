@@ -4,10 +4,14 @@ use clap::Parser;
 use oci2rootfs::{Converter, PullConfig};
 
 #[derive(Parser)]
-#[command(name = "oci2rootfs", about = "Convert OCI images to ext4 rootfs images")]
+#[command(
+    name = "oci2rootfs",
+    about = "Convert container images to ext4 rootfs images"
+)]
 struct Cli {
-    /// Source: local OCI layout directory or remote image reference
-    /// (e.g., ./oci-dir, nginx:1.21, gcr.io/project/app@sha256:...)
+    /// Source: local OCI layout directory, Docker overlay2 layer directory,
+    /// or remote image reference
+    /// (e.g., ./oci-dir, /var/lib/docker/overlay2/<id>, nginx:1.21)
     source: String,
 
     /// Output ext4 image path
@@ -61,8 +65,8 @@ async fn main() {
     let converter = Converter::new(&cli.output).size(cli.size);
 
     let result = if std::path::Path::new(&cli.source).exists() {
-        // Local OCI layout directory
-        eprintln!("Source: local OCI layout at {}", cli.source);
+        // Local directory (OCI layout or overlay2)
+        eprintln!("Source: local directory at {}", cli.source);
         converter.convert_local(&cli.source)
     } else {
         // Remote registry reference

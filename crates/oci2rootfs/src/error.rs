@@ -28,6 +28,9 @@ pub enum Error {
 
     #[error("invalid reference: {0}")]
     InvalidReference(String),
+
+    #[error("unsupported format: {0}")]
+    UnsupportedFormat(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

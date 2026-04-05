@@ -38,7 +38,6 @@ impl Converter {
     /// - OCI Image Layout (`oci-layout` + `index.json`)
     pub fn convert_local(self, source: impl AsRef<Path>) -> Result<()> {
         let source = source.as_ref();
-        let mut writer = Ext4Writer::create(&self.output, self.size)?;
 
         if overlay2::is_overlay2(source) {
             let archive = overlay2::resolve(source)?;
@@ -46,10 +45,13 @@ impl Converter {
                 "Resolved overlay2 image with {} layers",
                 archive.layer_count()
             );
+            let mut writer = Ext4Writer::create(&self.output, self.size)?;
             archive.apply_to(&mut writer)?;
+            writer.finish()?;
         } else {
             let image = oci::resolve(source)?;
             eprintln!("Resolved OCI image with {} layers", image.layers.len());
+            let mut writer = Ext4Writer::create(&self.output, self.size)?;
             for (i, layer) in image.layers.iter().enumerate() {
                 eprintln!(
                     "Applying layer {}/{}: {}",
@@ -60,9 +62,9 @@ impl Converter {
                 let reader = image.open_layer(layer)?;
                 apply_layer(reader, &mut writer)?;
             }
+            writer.finish()?;
         }
 
-        writer.finish()?;
         eprintln!("Created rootfs: {}", self.output.display());
         Ok(())
     }

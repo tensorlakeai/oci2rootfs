@@ -52,6 +52,13 @@ pub fn resolve(path: &Path) -> Result<Overlay2Archive> {
         )));
     }
 
+    if !path.join("link").is_file() {
+        return Err(Error::UnsupportedFormat(format!(
+            "{}: not an overlay2 layer (missing link file)",
+            path.display()
+        )));
+    }
+
     let overlay2_root = path
         .parent()
         .ok_or_else(|| Error::UnsupportedFormat("overlay2 layer has no parent directory".into()))?;
@@ -80,6 +87,7 @@ fn collect_lower_layers(
         return Ok(()); // base layer — no further references
     }
 
+    let canonical_root = overlay2_root.canonicalize()?;
     let content = fs::read_to_string(&lower_file)?;
     for link_ref in content.trim().split(':') {
         if link_ref.is_empty() {
@@ -101,6 +109,14 @@ fn collect_lower_layers(
         } else {
             link_path.canonicalize()?
         };
+
+        // Reject symlinks that escape the overlay2 storage directory.
+        if !diff_path.starts_with(&canonical_root) {
+            return Err(Error::UnsupportedFormat(format!(
+                "lower layer reference escapes overlay2 root: {}",
+                diff_path.display()
+            )));
+        }
 
         layers.push(diff_path);
     }
@@ -181,7 +197,10 @@ mod tests {
 
         let archive = resolve(&top).unwrap();
         assert_eq!(archive.layer_count(), 2);
-        assert!(archive.layers[0].ends_with("diff"));
+        assert_eq!(
+            fs::canonicalize(&archive.layers[0]).unwrap(),
+            fs::canonicalize(base.join("diff")).unwrap()
+        );
         assert_eq!(archive.layers[1], top.join("diff"));
     }
 }

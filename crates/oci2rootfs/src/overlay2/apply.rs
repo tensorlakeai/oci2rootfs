@@ -2,8 +2,10 @@
 //!
 //! Walks the directory tree and writes files, directories, and symlinks
 //! directly into ext4. Handles both OCI-style whiteouts (`.wh.*`) and
-//! overlay2-native whiteouts (character device 0/0).
+//! overlay2-native whiteouts (character device 0/0). Preserves hardlinks
+//! by tracking `(dev, ino)` pairs across the walk.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
@@ -13,16 +15,28 @@ use std::os::unix::fs::MetadataExt;
 use crate::error::Result;
 use crate::ext4::Ext4Writer;
 
+/// Inode key for hardlink detection: `(device, inode)`.
+type InodeKey = (u64, u64);
+
 /// Apply a single overlay2 layer to the ext4 writer.
 pub(super) fn apply_directory_layer(diff_dir: &Path, writer: &mut Ext4Writer) -> Result<()> {
-    walk(diff_dir, diff_dir, writer)
+    let mut hardlinks: HashMap<InodeKey, String> = HashMap::new();
+    walk(diff_dir, diff_dir, writer, &mut hardlinks)
 }
 
 /// Recursively walk `current` and write entries to ext4.
 ///
 /// `root` is the layer's diff directory; paths are made absolute relative
 /// to it (e.g. `root/usr/bin/foo` → `/usr/bin/foo` in ext4).
-fn walk(root: &Path, current: &Path, writer: &mut Ext4Writer) -> Result<()> {
+///
+/// `hardlinks` tracks `(dev, ino) → ext4_path` so that files sharing an
+/// inode on the host are written as hardlinks in ext4 instead of duplicates.
+fn walk(
+    root: &Path,
+    current: &Path,
+    writer: &mut Ext4Writer,
+    hardlinks: &mut HashMap<InodeKey, String>,
+) -> Result<()> {
     let mut entries: Vec<_> = fs::read_dir(current)?.collect::<std::result::Result<Vec<_>, _>>()?;
     // Sort for deterministic output.
     entries.sort_by_key(|e| e.file_name());
@@ -71,11 +85,17 @@ fn walk(root: &Path, current: &Path, writer: &mut Ext4Writer) -> Result<()> {
             let (mode, uid, gid) = ownership(&meta);
             writer.mkdir_p(&ext4_path, mode)?;
             writer.set_owner(&ext4_path, uid, gid)?;
-            walk(root, &full_path, writer)?;
+            walk(root, &full_path, writer, hardlinks)?;
         } else if meta.is_file() {
-            let (mode, uid, gid) = ownership(&meta);
-            let mut file = fs::File::open(&full_path)?;
-            writer.write_file(&ext4_path, &mut file, mode, uid, gid)?;
+            // Hardlink detection: if we've already written a file with the
+            // same (dev, ino), create a hardlink instead of a duplicate copy.
+            if let Some(existing) = check_hardlink(&meta, hardlinks, &ext4_path) {
+                writer.link(&existing, &ext4_path)?;
+            } else {
+                let (mode, uid, gid) = ownership(&meta);
+                let mut file = fs::File::open(&full_path)?;
+                writer.write_file(&ext4_path, &mut file, mode, uid, gid)?;
+            }
         }
         // Skip sockets, FIFOs, and non-whiteout device nodes.
     }
@@ -86,6 +106,36 @@ fn walk(root: &Path, current: &Path, writer: &mut Ext4Writer) -> Result<()> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// If `meta` has nlink > 1 and we've already seen its inode, return the
+/// previously written ext4 path (so the caller can create a hardlink).
+/// Otherwise record this inode and return `None`.
+#[cfg(unix)]
+fn check_hardlink(
+    meta: &fs::Metadata,
+    seen: &mut HashMap<InodeKey, String>,
+    ext4_path: &str,
+) -> Option<String> {
+    if meta.nlink() <= 1 {
+        return None;
+    }
+    let key = (meta.dev(), meta.ino());
+    if let Some(existing) = seen.get(&key) {
+        Some(existing.clone())
+    } else {
+        seen.insert(key, ext4_path.to_string());
+        None
+    }
+}
+
+#[cfg(not(unix))]
+fn check_hardlink(
+    _meta: &fs::Metadata,
+    _seen: &mut HashMap<InodeKey, String>,
+    _ext4_path: &str,
+) -> Option<String> {
+    None
+}
 
 /// Build the absolute ext4 path from a host filesystem path.
 fn to_ext4_path(root: &Path, full_path: &Path) -> String {

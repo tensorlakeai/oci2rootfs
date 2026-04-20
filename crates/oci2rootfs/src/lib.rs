@@ -87,6 +87,7 @@
 mod convert;
 mod error;
 mod ext4;
+mod ext4_options;
 mod layer;
 mod oci;
 mod overlay2;
@@ -95,9 +96,11 @@ mod path;
 mod pull;
 mod tar_source;
 
+pub use containerregistry_image::{ContainerConfig, Healthcheck, History, ImageConfig, RootFs};
 pub use convert::{
     Converter, ImageSource, IntoImageSource, OciLayoutSource, Overlay2Source, Platform, autodetect,
 };
 pub use error::{Error, Result};
+pub use ext4_options::Ext4Options;
 #[cfg(feature = "remote")]
 pub use pull::RemoteRef;

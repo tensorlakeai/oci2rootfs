@@ -49,6 +49,13 @@ async fn pull(reference_str: &str, insecure: bool, platform: &Platform) -> Resul
         .parse()
         .map_err(|e: containerregistry_registry::Error| Error::InvalidReference(e.to_string()))?;
 
+    tracing::info!(
+        registry = reference.registry(),
+        repository = reference.repository(),
+        tag = reference.tag().unwrap_or("latest"),
+        "pulling image from registry"
+    );
+
     let resolver = AuthResolver::new();
     let credential = resolver.resolve_or_anonymous(reference.registry());
 
@@ -65,14 +72,29 @@ async fn pull(reference_str: &str, insecure: bool, platform: &Platform) -> Resul
         }
     };
 
+    tracing::info!(
+        os = platform.os(),
+        arch = platform.arch(),
+        layer_count = manifest.layers().len(),
+        "resolved remote manifest"
+    );
+
     let config_data = client
         .get_blob(&reference, &manifest.config().digest)
         .await?;
     let config = containerregistry_image::ImageConfig::from_bytes(&config_data)?;
 
-    let mut layers = Vec::with_capacity(manifest.layers().len());
-    for layer_desc in manifest.layers() {
+    let layer_count = manifest.layers().len();
+    let mut layers = Vec::with_capacity(layer_count);
+    for (index, layer_desc) in manifest.layers().iter().enumerate() {
         let blob = client.get_blob(&reference, &layer_desc.digest).await?;
+        tracing::info!(
+            layer_index = index + 1,
+            layer_count,
+            digest = %layer_desc.digest,
+            bytes = layer_desc.size,
+            "downloaded layer blob"
+        );
         layers.push((layer_desc.clone(), blob));
     }
 

@@ -130,12 +130,53 @@ impl SourceImpl for Overlay2Archive {
         self.layers.len()
     }
 
+    fn config(&self) -> Option<&containerregistry_image::ImageConfig> {
+        // Docker stores the image config outside the overlay2 layer
+        // directory (under `/var/lib/docker/image/overlay2/imagedb/`),
+        // which this crate does not read.
+        None
+    }
+
+    fn estimated_raw_size(&self) -> Option<u64> {
+        let mut total: u64 = 0;
+        for diff in &self.layers {
+            total = total.saturating_add(tree_size(diff).ok()?);
+        }
+        Some(total.saturating_add(16 * 1024 * 1024))
+    }
+
     fn apply_to(&self, writer: &mut Ext4Writer) -> Result<()> {
-        for diff_dir in &self.layers {
+        for (index, diff_dir) in self.layers.iter().enumerate() {
+            let span = tracing::info_span!(
+                "apply_overlay2_layer",
+                layer_index = index + 1,
+                layer_count = self.layers.len(),
+                diff = %diff_dir.display(),
+            );
+            let _guard = span.enter();
             apply::apply_directory_layer(diff_dir, writer)?;
         }
         Ok(())
     }
+}
+
+/// Recursively sum sizes of regular files under `root` using
+/// `symlink_metadata().len()` (symlinks and directories contribute nothing).
+fn tree_size(root: &Path) -> std::io::Result<u64> {
+    let mut stack = vec![root.to_path_buf()];
+    let mut total: u64 = 0;
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let meta = fs::symlink_metadata(entry.path())?;
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else if meta.is_file() {
+                total = total.saturating_add(meta.len());
+            }
+        }
+    }
+    Ok(total)
 }
 
 #[cfg(test)]

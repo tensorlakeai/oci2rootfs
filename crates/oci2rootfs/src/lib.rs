@@ -4,6 +4,7 @@ mod ext4;
 mod layer;
 mod oci;
 mod overlay2;
+mod path;
 #[cfg(feature = "remote")]
 mod pull;
 mod tar_source;

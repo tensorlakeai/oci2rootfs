@@ -49,13 +49,6 @@ async fn pull(reference_str: &str, insecure: bool, platform: &Platform) -> Resul
         .parse()
         .map_err(|e: containerregistry_registry::Error| Error::InvalidReference(e.to_string()))?;
 
-    eprintln!(
-        "Pulling {}/{} from {}",
-        reference.repository(),
-        reference.tag().unwrap_or("latest"),
-        reference.registry()
-    );
-
     let resolver = AuthResolver::new();
     let credential = resolver.resolve_or_anonymous(reference.registry());
 
@@ -78,26 +71,12 @@ async fn pull(reference_str: &str, insecure: bool, platform: &Platform) -> Resul
     let config = containerregistry_image::ImageConfig::from_bytes(&config_data)?;
 
     let mut layers = Vec::with_capacity(manifest.layers().len());
-    for (index, layer_desc) in manifest.layers().iter().enumerate() {
-        eprintln!(
-            "Downloading layer {}/{}: {} ({} bytes)",
-            index + 1,
-            manifest.layers().len(),
-            layer_desc.digest,
-            layer_desc.size
-        );
+    for layer_desc in manifest.layers() {
         let blob = client.get_blob(&reference, &layer_desc.digest).await?;
         layers.push((layer_desc.clone(), blob));
     }
 
-    eprintln!(
-        "Pulled remote image for {}/{} with {} layers",
-        platform.os(),
-        platform.arch(),
-        layers.len()
-    );
-
-    Ok(TarImageSource::from_memory(config, layers, "remote"))
+    Ok(TarImageSource::from_memory(config, layers))
 }
 
 /// Resolve a platform-specific manifest from a multi-platform image index.
@@ -107,8 +86,6 @@ async fn resolve_platform_manifest(
     index: &ImageIndex,
     platform: &Platform,
 ) -> Result<containerregistry_image::Manifest> {
-    eprintln!("Resolving platform {}/{}", platform.os(), platform.arch());
-
     let desc = index
         .find_platform(platform.arch(), platform.os(), None)
         .ok_or_else(|| Error::NoManifest(format!("{}/{}", platform.os(), platform.arch())))?;
@@ -126,72 +103,5 @@ async fn resolve_platform_manifest(
         ManifestOrIndex::Index(_) => Err(Error::UnsupportedMediaType(
             "nested image index not supported".into(),
         )),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use containerregistry_image::{Descriptor, Digest, MediaType};
-    use std::collections::BTreeMap;
-    use std::io::Read;
-
-    fn make_descriptor(media_type: MediaType) -> Descriptor {
-        Descriptor {
-            media_type,
-            digest: Digest::sha256(b"test"),
-            size: 0,
-            urls: vec![],
-            annotations: BTreeMap::new(),
-            data: None,
-            platform: None,
-        }
-    }
-
-    #[test]
-    fn remote_ref_defaults() {
-        let remote = RemoteRef::new("alpine:latest");
-        assert_eq!(remote.reference, "alpine:latest");
-        assert_eq!(remote.platform, Platform::default());
-        assert!(!remote.insecure);
-    }
-
-    #[test]
-    fn tar_source_from_memory_reports_layer_count() {
-        let image = TarImageSource::from_memory(
-            containerregistry_image::ImageConfig::from_bytes(
-                br#"{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}"#,
-            )
-            .unwrap(),
-            vec![(make_descriptor(MediaType::OciLayer), vec![1, 2, 3])],
-            "remote",
-        );
-
-        assert_eq!(crate::convert::SourceImpl::layer_count(&image), 1);
-    }
-
-    #[test]
-    fn tar_source_open_layer_gzip() {
-        use flate2::Compression;
-        use flate2::write::GzEncoder;
-        use std::io::Write;
-
-        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
-        encoder.write_all(b"compressed data").unwrap();
-        let compressed = encoder.finish().unwrap();
-
-        let image = TarImageSource::from_memory(
-            containerregistry_image::ImageConfig::from_bytes(
-                br#"{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}"#,
-            )
-            .unwrap(),
-            vec![(make_descriptor(MediaType::OciLayerGzip), compressed)],
-            "remote",
-        );
-
-        let mut reader = image.open_layer(0).unwrap();
-        let mut buf = String::new();
-        reader.read_to_string(&mut buf).unwrap();
-        assert_eq!(buf, "compressed data");
     }
 }

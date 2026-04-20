@@ -12,6 +12,8 @@ tar = "0.4"
 flate2 = "1.0"
 zstd = "0.13"
 thiserror = "2"
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
 arcbox-ext4.workspace = true
 containerregistry-image = "0.1.1"
 containerregistry-layout = "0.1.1"

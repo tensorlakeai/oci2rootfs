@@ -12,11 +12,18 @@ pub(crate) fn resolve(layout: Layout, platform: &Platform) -> Result<TarImageSou
     let manifest_desc = find_manifest_descriptor(&layout, &index, platform)?;
     let manifest = layout.read_manifest(&manifest_desc.digest)?;
     let config = layout.read_config(&manifest.config().digest)?;
-    let layers = manifest
+    let layers: Vec<_> = manifest
         .layers()
         .iter()
         .map(|layer| (layer.clone(), layout.blob_path(&layer.digest)))
         .collect();
+
+    tracing::info!(
+        os = platform.os(),
+        arch = platform.arch(),
+        layer_count = layers.len(),
+        "resolved OCI image layout"
+    );
 
     Ok(TarImageSource::from_files(config, layers))
 }

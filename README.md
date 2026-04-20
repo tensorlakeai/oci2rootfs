@@ -36,6 +36,12 @@ oci2rootfs localhost:5000/myapp:latest --output rootfs.ext4 --insecure
 | `--size` | `512M` | Image size (`128M`, `1G`, etc.) |
 | `--platform` | `linux/amd64` | Target platform |
 | `--insecure` | `false` | Allow HTTP registry connections |
+| `--label` | (none) | Volume label written to the superblock (≤16 bytes) |
+| `--uuid` | random | Filesystem UUID written to the superblock |
+
+Set `RUST_LOG=info` (or `debug`, `trace`) to see per-layer progress and
+timing on stderr — the CLI installs a `tracing-subscriber` fmt layer
+wired to `RUST_LOG` via env-filter.
 
 ## Library
 
@@ -63,10 +69,28 @@ let source = RemoteRef::new("nginx:latest")
     .fetch()
     .await?;
 
+// Image config (entrypoint/cmd/env/...) is available on the source.
+if let Some(cfg) = source.config() {
+    if let Some(container) = &cfg.config {
+        println!("entrypoint: {:?}", container.entrypoint);
+    }
+}
+
 Converter::new("rootfs.ext4").convert(source)?;
 # Ok(())
 # }
 ```
+
+### ext4 image properties
+
+| Property         | Value                                  | Configurable |
+|------------------|----------------------------------------|--------------|
+| Block size       | 4 KiB                                  | No (arcbox-ext4 fixed) |
+| Journal          | none (effectively `mkfs.ext4 -O ^has_journal`) | No |
+| Feature flags    | `SPARSE_SUPER2 | EXT_ATTR`             | No |
+| Volume label     | empty                                  | `Ext4Options::label` / `--label` |
+| UUID             | random v4                              | `Ext4Options::uuid` / `--uuid` |
+| `ImageConfig`    | exposed via `ImageSource::config()` for OCI layout and remote pulls; `None` for overlay2 sources (Docker keeps the config outside the layer tree) | — |
 
 ### Feature flags
 
@@ -92,6 +116,8 @@ oci2rootfs = { version = "0.1", default-features = false }
   images with many small layers but would complicate progress reporting.
 - **No device-node support.** `mknod`-created entries in tar layers (char/
   block/FIFO) are skipped silently; overlay2 `.wh.<name>` files cover deletion.
+- **Block size and inode ratio are not configurable.** `arcbox-ext4` hard-codes
+  4 KiB blocks and computes inode counts internally.
 
 ## Build
 
@@ -110,6 +136,7 @@ crates/
 │       ├── ext4.rs      # ext4 image writer (arcbox-ext4)
 │       ├── layer.rs     # Tar layer application with whiteout support
 │       ├── oci.rs       # OCI Image Layout resolution
+│       ├── ext4_options.rs # Post-format UUID/label superblock rewrite
 │       ├── overlay2/    # Docker overlay2 resolution and apply
 │       ├── path.rs      # Shared path sanitation + whiteout parsing
 │       ├── pull.rs      # Remote registry pull (feature = "remote")

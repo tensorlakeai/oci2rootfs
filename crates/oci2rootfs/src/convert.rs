@@ -1,9 +1,13 @@
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
+use containerregistry_image::ImageConfig;
 use containerregistry_layout::Layout;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::ext4::Ext4Writer;
+use crate::ext4_options::{self, Ext4Options};
 use crate::oci;
 use crate::overlay2::{self, Overlay2Archive};
 
@@ -11,6 +15,7 @@ use crate::overlay2::{self, Overlay2Archive};
 pub struct Converter {
     output: PathBuf,
     size: u64,
+    ext4_options: Ext4Options,
 }
 
 /// A resolved image source ready to be applied to an ext4 writer.
@@ -47,6 +52,8 @@ const DEFAULT_SIZE: u64 = 512 * 1024 * 1024;
 
 pub(crate) trait SourceImpl {
     fn layer_count(&self) -> usize;
+    fn config(&self) -> Option<&ImageConfig>;
+    fn estimated_raw_size(&self) -> Option<u64>;
     fn apply_to(&self, writer: &mut Ext4Writer) -> Result<()>;
 }
 
@@ -56,6 +63,7 @@ impl Converter {
         Self {
             output: output.as_ref().to_path_buf(),
             size: DEFAULT_SIZE,
+            ext4_options: Ext4Options::default(),
         }
     }
 
@@ -65,13 +73,84 @@ impl Converter {
         self
     }
 
+    /// Set ext4 image metadata overrides (volume label, UUID).
+    ///
+    /// Applied to the superblock after the image is fully written. See
+    /// [`Ext4Options`] for the set of adjustable fields and their
+    /// constraints.
+    pub fn ext4_options(mut self, opts: Ext4Options) -> Self {
+        self.ext4_options = opts;
+        self
+    }
+
     /// Convert the provided image source into an ext4 rootfs image.
+    ///
+    /// Before touching the output path this checks the source's estimated
+    /// raw size against the configured image size and returns
+    /// [`Error::InsufficientSize`] if the image cannot fit. If the apply
+    /// step fails partway through, any partial output file is removed
+    /// before returning the error.
     pub fn convert(self, source: impl IntoImageSource) -> Result<()> {
+        let started = Instant::now();
         let source = source.into_image_source()?;
+
+        if let Some(needed) = source.estimated_raw_size()
+            && needed > self.size
+        {
+            return Err(Error::InsufficientSize {
+                needed,
+                configured: self.size,
+            });
+        }
+
+        tracing::info!(
+            output = %self.output.display(),
+            size = self.size,
+            layer_count = source.layer_count(),
+            "creating ext4 image"
+        );
+
+        let mut guard = PartialOutputGuard::new(&self.output);
+
         let mut writer = Ext4Writer::create(&self.output, self.size)?;
         source.apply_to(&mut writer)?;
         writer.finish()?;
+        ext4_options::apply(&self.output, &self.ext4_options)?;
+
+        guard.disarm();
+
+        tracing::info!(
+            output = %self.output.display(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "conversion complete"
+        );
         Ok(())
+    }
+}
+
+/// RAII guard that removes a partially-written output file when dropped
+/// without being explicitly disarmed. Ensures a failed `convert` doesn't
+/// leave a half-baked `.ext4` on disk.
+struct PartialOutputGuard<'a> {
+    path: &'a Path,
+    armed: bool,
+}
+
+impl<'a> PartialOutputGuard<'a> {
+    fn new(path: &'a Path) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PartialOutputGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed && self.path.exists() {
+            let _ = fs::remove_file(self.path);
+        }
     }
 }
 
@@ -85,6 +164,27 @@ impl ImageSource {
     /// Returns the number of layers that will be applied.
     pub fn layer_count(&self) -> usize {
         self.inner.layer_count()
+    }
+
+    /// Returns the OCI image config (entrypoint, cmd, env, working_dir,
+    /// user, architecture, os, etc.) when the source carries one.
+    ///
+    /// `OciLayoutSource` and `RemoteRef::fetch` surface the config. Docker
+    /// overlay2 storage keeps the config outside the layer directory
+    /// (under `/var/lib/docker/image/overlay2/imagedb/`), which this crate
+    /// does not read — `Overlay2Source` therefore returns `None`.
+    pub fn config(&self) -> Option<&ImageConfig> {
+        self.inner.config()
+    }
+
+    /// Lower-bound estimate of the raw bytes needed to hold the image
+    /// (layer contents + a small ext4 metadata allowance).
+    ///
+    /// Used by [`Converter::convert`] as a preflight check before formatting
+    /// the output. Returns `None` when an estimate can't be computed for
+    /// the source type.
+    pub fn estimated_raw_size(&self) -> Option<u64> {
+        self.inner.estimated_raw_size()
     }
 
     fn apply_to(&self, writer: &mut Ext4Writer) -> Result<()> {

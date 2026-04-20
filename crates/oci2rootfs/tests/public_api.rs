@@ -1,11 +1,33 @@
+#![cfg(unix)]
+
 use arcbox_ext4::Reader;
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use oci2rootfs::{Converter, OciLayoutSource, Platform, autodetect};
+use oci2rootfs::{Converter, OciLayoutSource, Overlay2Source, Platform, autodetect};
+use serial_test::serial;
 use sha2::{Digest as _, Sha256};
+use std::os::unix::fs::MetadataExt;
+use std::path::Path;
 use tempfile::{NamedTempFile, TempDir};
 
 const TEST_SIZE: u64 = 16 * 1024 * 1024;
+
+/// Create an overlay2 layer directory (`diff/` + `link`, plus optional
+/// `lower`). Returns the chain-id directory.
+fn create_overlay2_layer(
+    overlay2_root: &Path,
+    chain_id: &str,
+    link_id: &str,
+    lower: Option<&str>,
+) -> std::path::PathBuf {
+    let dir = overlay2_root.join(chain_id);
+    std::fs::create_dir_all(dir.join("diff")).unwrap();
+    std::fs::write(dir.join("link"), link_id).unwrap();
+    if let Some(lower) = lower {
+        std::fs::write(dir.join("lower"), lower).unwrap();
+    }
+    dir
+}
 
 fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
@@ -78,6 +100,7 @@ fn create_oci_layout() -> TempDir {
 }
 
 #[test]
+#[serial]
 fn convert_oci_layout_source() {
     let layout = create_oci_layout();
     let output = NamedTempFile::new().unwrap();
@@ -96,15 +119,14 @@ fn convert_oci_layout_source() {
 }
 
 #[test]
+#[serial]
 fn autodetect_overlay2_source() {
     let root = TempDir::new().unwrap();
-    let layer = root.path().join("layer-a");
-    std::fs::create_dir_all(layer.join("diff")).unwrap();
+    let layer = create_overlay2_layer(root.path(), "layer-a", "AAA", None);
     std::fs::write(layer.join("diff").join("hello.txt"), b"hello from overlay").unwrap();
-    std::fs::write(layer.join("link"), "AAA").unwrap();
 
     let output = NamedTempFile::new().unwrap();
-    let source = autodetect(&layer, Platform::default()).unwrap();
+    let source = autodetect(&layer).unwrap();
     assert_eq!(source.layer_count(), 1);
 
     Converter::new(output.path())
@@ -114,4 +136,98 @@ fn autodetect_overlay2_source() {
 
     let mut reader = Reader::new(output.path()).unwrap();
     assert!(reader.exists("/hello.txt"));
+}
+
+#[test]
+#[serial]
+fn overlay2_chain_applies_layers_bottom_to_top() {
+    let overlay2_root = TempDir::new().unwrap();
+    let root = overlay2_root.path();
+    std::fs::create_dir_all(root.join("l")).unwrap();
+
+    // Base: writes /keep.txt and /replace.txt (first value).
+    let base = create_overlay2_layer(root, "base", "BASE", None);
+    std::fs::write(base.join("diff").join("keep.txt"), b"base-keep").unwrap();
+    std::fs::write(base.join("diff").join("replace.txt"), b"base-replace").unwrap();
+    std::os::unix::fs::symlink("../base/diff", root.join("l/BASE")).unwrap();
+
+    // Top: overrides /replace.txt and adds /new.txt.
+    let top = create_overlay2_layer(root, "top", "TOP", Some("l/BASE"));
+    std::fs::write(top.join("diff").join("replace.txt"), b"top-replace").unwrap();
+    std::fs::write(top.join("diff").join("new.txt"), b"top-new").unwrap();
+
+    let output = NamedTempFile::new().unwrap();
+    Converter::new(output.path())
+        .size(TEST_SIZE)
+        .convert(Overlay2Source::open(&top).unwrap())
+        .unwrap();
+
+    let mut reader = Reader::new(output.path()).unwrap();
+    assert_eq!(
+        reader.read_file("/keep.txt", 0, None).unwrap(),
+        b"base-keep"
+    );
+    assert_eq!(
+        reader.read_file("/replace.txt", 0, None).unwrap(),
+        b"top-replace"
+    );
+    assert_eq!(reader.read_file("/new.txt", 0, None).unwrap(), b"top-new");
+}
+
+#[test]
+#[serial]
+fn overlay2_oci_whiteout_deletes_lower_entry() {
+    let overlay2_root = TempDir::new().unwrap();
+    let root = overlay2_root.path();
+    std::fs::create_dir_all(root.join("l")).unwrap();
+
+    let base = create_overlay2_layer(root, "base", "BASE", None);
+    std::fs::write(base.join("diff").join("doomed.txt"), b"bye").unwrap();
+    std::os::unix::fs::symlink("../base/diff", root.join("l/BASE")).unwrap();
+
+    let top = create_overlay2_layer(root, "top", "TOP", Some("l/BASE"));
+    // OCI-style whiteout: `.wh.<name>` at the same parent.
+    std::fs::write(top.join("diff").join(".wh.doomed.txt"), b"").unwrap();
+
+    let output = NamedTempFile::new().unwrap();
+    Converter::new(output.path())
+        .size(TEST_SIZE)
+        .convert(Overlay2Source::open(&top).unwrap())
+        .unwrap();
+
+    let mut reader = Reader::new(output.path()).unwrap();
+    assert!(!reader.exists("/doomed.txt"));
+}
+
+#[test]
+#[serial]
+fn overlay2_hardlink_dedup_preserves_inode_sharing() {
+    let overlay2_root = TempDir::new().unwrap();
+    let layer = create_overlay2_layer(overlay2_root.path(), "layer", "LAYER", None);
+    let diff = layer.join("diff");
+    let original = diff.join("original.bin");
+    let linked = diff.join("linked.bin");
+    std::fs::write(&original, b"shared payload").unwrap();
+    std::fs::hard_link(&original, &linked).unwrap();
+    // Sanity check: host sees shared inode.
+    assert_eq!(
+        std::fs::metadata(&original).unwrap().ino(),
+        std::fs::metadata(&linked).unwrap().ino()
+    );
+
+    let output = NamedTempFile::new().unwrap();
+    Converter::new(output.path())
+        .size(TEST_SIZE)
+        .convert(Overlay2Source::open(&layer).unwrap())
+        .unwrap();
+
+    let mut reader = Reader::new(output.path()).unwrap();
+    let (ino_a, inode_a) = reader.stat("/original.bin").unwrap();
+    let (ino_b, inode_b) = reader.stat("/linked.bin").unwrap();
+    assert_eq!(
+        ino_a, ino_b,
+        "hardlinked host files should share an inode in ext4"
+    );
+    assert_eq!(inode_a.links_count, 2);
+    assert_eq!(inode_b.links_count, 2);
 }

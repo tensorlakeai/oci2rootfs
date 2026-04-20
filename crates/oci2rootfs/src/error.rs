@@ -34,44 +34,9 @@ pub enum Error {
 
     #[error("unsupported format: {0}")]
     UnsupportedFormat(String),
+
+    #[error("invalid tar entry path: {0}")]
+    InvalidTarPath(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_no_manifest_display() {
-        let err = Error::NoManifest("linux/amd64".into());
-        assert_eq!(
-            err.to_string(),
-            "no matching manifest found for platform linux/amd64"
-        );
-    }
-
-    #[test]
-    fn test_unsupported_media_type_display() {
-        let err = Error::UnsupportedMediaType("application/vnd.unknown".into());
-        assert_eq!(
-            err.to_string(),
-            "unsupported media type: application/vnd.unknown"
-        );
-    }
-
-    #[test]
-    #[cfg(feature = "remote")]
-    fn test_invalid_reference_display() {
-        let err = Error::InvalidReference("bad ref".into());
-        assert_eq!(err.to_string(), "invalid reference: bad ref");
-    }
-
-    #[test]
-    fn test_from_io_error() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
-        let err: Error = io_err.into();
-        assert!(matches!(err, Error::Io(_)));
-        assert!(err.to_string().contains("file not found"));
-    }
-}

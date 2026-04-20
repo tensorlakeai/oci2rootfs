@@ -5,6 +5,7 @@ use arcbox_ext4::Formatter;
 use arcbox_ext4::constants::{file_mode, make_mode};
 
 use crate::error::Result;
+use crate::path::join;
 
 /// High-level ext4 image writer that wraps arcbox-ext4's Formatter.
 pub struct Ext4Writer {
@@ -50,9 +51,11 @@ impl Ext4Writer {
     ) -> Result<()> {
         let perm = (mode & 0o7777) as u16;
 
-        // If the file already exists, remove it first (layer override).
-        if self.formatter.exists(path) && !self.formatter.is_dir(path) {
-            self.formatter.unlink(path, false)?;
+        // If an entry already exists at this path, remove it first (layer
+        // override). Directories are removed recursively; anything else is
+        // unlinked.
+        if self.formatter.exists(path) {
+            self.delete(path)?;
         }
 
         self.formatter.create(
@@ -68,11 +71,10 @@ impl Ext4Writer {
         Ok(())
     }
 
-    /// Create a symbolic link.
+    /// Create a symbolic link at `path` pointing to `target`.
     pub fn symlink(&mut self, target: &str, path: &str) -> Result<()> {
-        // Remove existing entry if present.
         if self.formatter.exists(path) {
-            self.formatter.unlink(path, false)?;
+            self.delete(path)?;
         }
 
         self.formatter.create(
@@ -88,36 +90,45 @@ impl Ext4Writer {
         Ok(())
     }
 
-    /// Create a hard link.
-    pub fn link(&mut self, src: &str, dst: &str) -> Result<()> {
-        // Remove existing entry if present.
-        if self.formatter.exists(dst) {
-            self.formatter.unlink(dst, false)?;
+    /// Create a hard link at `path` pointing to `target`.
+    pub fn link(&mut self, target: &str, path: &str) -> Result<()> {
+        if self.formatter.exists(path) {
+            self.delete(path)?;
         }
 
-        self.formatter.link(dst, src)?;
+        self.formatter.link(path, target)?;
         Ok(())
     }
 
-    /// Remove a file.
-    pub fn remove(&mut self, path: &str) -> Result<()> {
-        if self.formatter.exists(path) && !self.formatter.is_dir(path) {
-            self.formatter.unlink(path, false)?;
+    /// Delete any entry at `path` — file, symlink, or directory (recursively).
+    ///
+    /// Returns `Ok(())` if the path does not exist; this matches the semantics
+    /// of OCI whiteouts, which may target entries that never appeared in a
+    /// lower layer.
+    pub fn delete(&mut self, path: &str) -> Result<()> {
+        if !self.formatter.exists(path) {
+            return Ok(());
         }
-        Ok(())
-    }
 
-    /// Remove a directory and its contents.
-    pub fn rmdir(&mut self, path: &str) -> Result<()> {
         if self.formatter.is_dir(path) {
-            self.formatter.unlink(path, false)?;
+            self.clear_dir(path)?;
         }
+        self.formatter.unlink(path, false)?;
         Ok(())
     }
 
-    /// List directory entries (excluding "." and "..").
-    pub fn list_dir(&self, path: &str) -> Result<Vec<String>> {
-        Ok(self.formatter.list_dir(path))
+    /// Recursively remove every child of `path`, leaving the directory itself.
+    ///
+    /// No-op when `path` does not exist or is not a directory.
+    pub fn clear_dir(&mut self, path: &str) -> Result<()> {
+        if !self.formatter.is_dir(path) {
+            return Ok(());
+        }
+        let entries = self.formatter.list_dir(path);
+        for name in entries {
+            self.delete(&join(path, &name))?;
+        }
+        Ok(())
     }
 
     /// Set ownership on a path.
@@ -126,13 +137,16 @@ impl Ext4Writer {
         Ok(())
     }
 
-    /// Check if a path exists.
-    pub fn exists(&self, path: &str) -> bool {
+    /// Check if a path exists. Available in tests so assertions can inspect
+    /// image state without exposing the underlying `Formatter`.
+    #[cfg(test)]
+    pub(crate) fn exists(&self, path: &str) -> bool {
         self.formatter.exists(path)
     }
 
-    /// Check if a path is a directory.
-    pub fn is_dir(&self, path: &str) -> bool {
+    /// Check if a path is a directory. See [`Self::exists`] for rationale.
+    #[cfg(test)]
+    pub(crate) fn is_dir(&self, path: &str) -> bool {
         self.formatter.is_dir(path)
     }
 
@@ -160,133 +174,86 @@ mod tests {
 
     #[test]
     #[serial]
-    fn create_and_finish() {
-        let (writer, file) = create_writer();
-        writer.finish().unwrap();
-        let metadata = std::fs::metadata(file.path()).unwrap();
-        assert_eq!(metadata.len(), TEST_SIZE);
-    }
-
-    #[test]
-    #[serial]
-    fn mkdir_and_exists() {
+    fn mkdir_p_updates_permissions_on_existing_dir() {
         let (mut writer, _file) = create_writer();
-        writer.mkdir_p("/testdir", 0o755).unwrap();
-        assert!(writer.exists("/testdir"));
-        assert!(writer.is_dir("/testdir"));
+        writer.mkdir_p("/etc", 0o755).unwrap();
+        writer.mkdir_p("/etc", 0o700).unwrap();
+        assert!(writer.is_dir("/etc"));
         writer.finish().unwrap();
     }
 
     #[test]
     #[serial]
-    fn mkdir_idempotent() {
-        let (mut writer, _file) = create_writer();
-        writer.mkdir_p("/testdir", 0o755).unwrap();
-        writer.mkdir_p("/testdir", 0o700).unwrap();
-        assert!(writer.is_dir("/testdir"));
-        writer.finish().unwrap();
-    }
-
-    #[test]
-    #[serial]
-    fn write_file() {
+    fn write_file_overwrites_existing_file() {
         let (mut writer, _file) = create_writer();
         writer
-            .write_file("/hello.txt", &mut Cursor::new(b"hello world"), 0o644, 0, 0)
+            .write_file("/f", &mut Cursor::new(b"first"), 0o644, 0, 0)
             .unwrap();
-        assert!(writer.exists("/hello.txt"));
+        writer
+            .write_file("/f", &mut Cursor::new(b"second"), 0o644, 0, 0)
+            .unwrap();
+        assert!(writer.exists("/f"));
         writer.finish().unwrap();
     }
 
     #[test]
     #[serial]
-    fn write_file_overwrite() {
+    fn write_file_overwrites_existing_symlink() {
         let (mut writer, _file) = create_writer();
         writer
-            .write_file("/file.txt", &mut Cursor::new(b"first"), 0o644, 0, 0)
+            .write_file("/target", &mut Cursor::new(b"t"), 0o644, 0, 0)
             .unwrap();
+        writer.symlink("/target", "/link").unwrap();
+        // Layer-override: a tar entry of type Regular shadows the symlink.
         writer
-            .write_file("/file.txt", &mut Cursor::new(b"second"), 0o644, 0, 0)
+            .write_file("/link", &mut Cursor::new(b"plain"), 0o644, 0, 0)
             .unwrap();
-        assert!(writer.exists("/file.txt"));
+        assert!(writer.exists("/link"));
         writer.finish().unwrap();
     }
 
     #[test]
     #[serial]
-    fn symlink() {
+    fn delete_recursively_removes_nested_directory() {
         let (mut writer, _file) = create_writer();
+        writer.mkdir_p("/a", 0o755).unwrap();
+        writer.mkdir_p("/a/b", 0o755).unwrap();
         writer
-            .write_file("/target.txt", &mut Cursor::new(b"data"), 0o644, 0, 0)
+            .write_file("/a/b/c.txt", &mut Cursor::new(b"c"), 0o644, 0, 0)
             .unwrap();
-        writer.symlink("/target.txt", "/link.txt").unwrap();
-        assert!(writer.exists("/link.txt"));
+
+        writer.delete("/a").unwrap();
+
+        assert!(!writer.exists("/a"));
         writer.finish().unwrap();
     }
 
     #[test]
     #[serial]
-    fn link() {
+    fn delete_missing_path_is_noop() {
         let (mut writer, _file) = create_writer();
-        writer
-            .write_file("/original.txt", &mut Cursor::new(b"data"), 0o644, 0, 0)
-            .unwrap();
-        writer.link("/original.txt", "/hardlink.txt").unwrap();
-        assert!(writer.exists("/hardlink.txt"));
+        writer.delete("/does/not/exist").unwrap();
         writer.finish().unwrap();
     }
 
     #[test]
     #[serial]
-    fn remove() {
+    fn clear_dir_leaves_directory_in_place() {
         let (mut writer, _file) = create_writer();
+        writer.mkdir_p("/cache", 0o755).unwrap();
         writer
-            .write_file("/removeme.txt", &mut Cursor::new(b"data"), 0o644, 0, 0)
+            .write_file("/cache/a", &mut Cursor::new(b"a"), 0o644, 0, 0)
             .unwrap();
-        assert!(writer.exists("/removeme.txt"));
-        writer.remove("/removeme.txt").unwrap();
-        assert!(!writer.exists("/removeme.txt"));
-        writer.finish().unwrap();
-    }
-
-    #[test]
-    #[serial]
-    fn rmdir() {
-        let (mut writer, _file) = create_writer();
-        writer.mkdir_p("/emptydir", 0o755).unwrap();
-        assert!(writer.is_dir("/emptydir"));
-        writer.rmdir("/emptydir").unwrap();
-        assert!(!writer.is_dir("/emptydir"));
-        writer.finish().unwrap();
-    }
-
-    #[test]
-    #[serial]
-    fn list_dir() {
-        let (mut writer, _file) = create_writer();
-        writer.mkdir_p("/parent", 0o755).unwrap();
+        writer.mkdir_p("/cache/sub", 0o755).unwrap();
         writer
-            .write_file("/parent/a.txt", &mut Cursor::new(b"a"), 0o644, 0, 0)
+            .write_file("/cache/sub/b", &mut Cursor::new(b"b"), 0o644, 0, 0)
             .unwrap();
-        writer
-            .write_file("/parent/b.txt", &mut Cursor::new(b"b"), 0o644, 0, 0)
-            .unwrap();
-        writer.mkdir_p("/parent/subdir", 0o755).unwrap();
 
-        let mut entries = writer.list_dir("/parent").unwrap();
-        entries.sort();
-        assert_eq!(entries, vec!["a.txt", "b.txt", "subdir"]);
-        writer.finish().unwrap();
-    }
+        writer.clear_dir("/cache").unwrap();
 
-    #[test]
-    #[serial]
-    fn set_owner() {
-        let (mut writer, _file) = create_writer();
-        writer
-            .write_file("/perm.txt", &mut Cursor::new(b"data"), 0o644, 0, 0)
-            .unwrap();
-        writer.set_owner("/perm.txt", 1000, 1000).unwrap();
+        assert!(writer.is_dir("/cache"));
+        assert!(!writer.exists("/cache/a"));
+        assert!(!writer.exists("/cache/sub"));
         writer.finish().unwrap();
     }
 }

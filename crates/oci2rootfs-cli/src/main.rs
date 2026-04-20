@@ -1,7 +1,7 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Parser;
-use oci2rootfs::{Converter, Platform, RemoteRef, autodetect};
+use oci2rootfs::{Converter, OciLayoutSource, Overlay2Source, Platform, RemoteRef};
 
 #[derive(Parser)]
 #[command(
@@ -68,17 +68,25 @@ async fn main() {
 
     let converter = Converter::new(&cli.output).size(cli.size);
 
-    let result = if std::path::Path::new(&cli.source).exists() {
-        eprintln!("Source: local directory at {}", cli.source);
-        autodetect(&cli.source, platform).and_then(|source| converter.convert(source))
+    let result = if Path::new(&cli.source).exists() {
+        let path = Path::new(&cli.source);
+        if Overlay2Source::matches(path) {
+            eprintln!("Source: Docker overlay2 at {}", cli.source);
+            Overlay2Source::open(path).and_then(|s| converter.convert(s))
+        } else {
+            eprintln!("Source: OCI image layout at {}", cli.source);
+            OciLayoutSource::open(path)
+                .map(|s| s.platform(platform))
+                .and_then(|s| converter.convert(s))
+        }
     } else {
         eprintln!("Source: remote registry {}", cli.source);
-        let source = RemoteRef::new(&cli.source)
+        RemoteRef::new(&cli.source)
             .platform(platform)
             .insecure(cli.insecure)
             .fetch()
-            .await;
-        source.and_then(|source| converter.convert(source))
+            .await
+            .and_then(|source| converter.convert(source))
     };
 
     if let Err(e) = result {
@@ -92,39 +100,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_size_megabytes() {
-        assert_eq!(parse_size("512M").unwrap(), 512 * 1024 * 1024);
-    }
-
-    #[test]
-    fn test_parse_size_gigabytes() {
+    fn parse_size_supports_suffixes() {
         assert_eq!(parse_size("1G").unwrap(), 1024 * 1024 * 1024);
-    }
-
-    #[test]
-    fn test_parse_size_kilobytes() {
-        assert_eq!(parse_size("128K").unwrap(), 128 * 1024);
-    }
-
-    #[test]
-    fn test_parse_size_lowercase() {
         assert_eq!(parse_size("512m").unwrap(), 512 * 1024 * 1024);
-        assert_eq!(parse_size("1g").unwrap(), 1024 * 1024 * 1024);
-        assert_eq!(parse_size("128k").unwrap(), 128 * 1024);
-    }
-
-    #[test]
-    fn test_parse_size_raw_bytes() {
+        assert_eq!(parse_size("128K").unwrap(), 128 * 1024);
         assert_eq!(parse_size("1024").unwrap(), 1024);
     }
 
     #[test]
-    fn test_parse_size_invalid() {
+    fn parse_size_rejects_garbage() {
         assert!(parse_size("abc").is_err());
     }
 
     #[test]
-    fn test_parse_platform_valid() {
+    fn parse_platform_round_trip() {
         assert_eq!(
             parse_platform("linux/amd64").unwrap(),
             Platform::new("linux", "amd64")
@@ -132,20 +121,8 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_platform_arm() {
-        assert_eq!(
-            parse_platform("linux/arm64").unwrap(),
-            Platform::new("linux", "arm64")
-        );
-    }
-
-    #[test]
-    fn test_parse_platform_invalid() {
+    fn parse_platform_rejects_bad_shape() {
         assert!(parse_platform("invalid").is_err());
-    }
-
-    #[test]
-    fn test_parse_platform_too_many() {
         assert!(parse_platform("a/b/c").is_err());
     }
 }

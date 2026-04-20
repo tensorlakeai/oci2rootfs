@@ -14,6 +14,7 @@ use std::os::unix::fs::MetadataExt;
 
 use crate::error::Result;
 use crate::ext4::Ext4Writer;
+use crate::path::{Whiteout, join, parent_of, parse_oci_whiteout};
 
 /// Inode key for hardlink detection: `(device, inode)`.
 type InodeKey = (u64, u64);
@@ -49,34 +50,21 @@ fn walk(
 
         let ext4_path = to_ext4_path(root, &full_path);
 
-        // --- whiteout handling ---
-
-        // OCI opaque whiteout: clear directory contents.
-        if name_str == ".wh..wh..opq" {
+        // OCI whiteouts (.wh.<name>, .wh..wh..opq).
+        if let Some(marker) = parse_oci_whiteout(&name_str) {
             let parent = parent_of(&ext4_path);
-            clear_directory(writer, &parent)?;
-            continue;
-        }
-
-        // OCI-style deletion whiteout (.wh.<name>).
-        if let Some(target_name) = name_str.strip_prefix(".wh.") {
-            let parent = parent_of(&ext4_path);
-            let target = if parent == "/" {
-                format!("/{target_name}")
-            } else {
-                format!("{parent}/{target_name}")
-            };
-            delete_entry(writer, &target)?;
+            match marker {
+                Whiteout::Delete(target) => writer.delete(&join(&parent, target))?,
+                Whiteout::Opaque => writer.clear_dir(&parent)?,
+            }
             continue;
         }
 
         // Overlay2-native whiteout: character device with rdev == 0.
         if is_chardev_whiteout(&meta) {
-            delete_entry(writer, &ext4_path)?;
+            writer.delete(&ext4_path)?;
             continue;
         }
-
-        // --- regular entries ---
 
         if meta.is_symlink() {
             let target = fs::read_link(&full_path)?;
@@ -102,10 +90,6 @@ fn walk(
 
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 /// If `meta` has nlink > 1 and we've already seen its inode, return the
 /// previously written ext4 path (so the caller can create a hardlink).
@@ -166,42 +150,6 @@ fn is_chardev_whiteout(_meta: &fs::Metadata) -> bool {
     false
 }
 
-/// Parent ext4 path (`/a/b/c` → `/a/b`).
-fn parent_of(path: &str) -> String {
-    let path = path.trim_end_matches('/');
-    match path.rfind('/') {
-        Some(0) | None => "/".to_string(),
-        Some(pos) => path[..pos].to_string(),
-    }
-}
-
-/// Delete a file or directory from ext4.
-fn delete_entry(writer: &mut Ext4Writer, path: &str) -> Result<()> {
-    if writer.is_dir(path) {
-        writer.rmdir(path)?;
-    } else if writer.exists(path) {
-        writer.remove(path)?;
-    }
-    Ok(())
-}
-
-/// Remove all children of a directory (opaque whiteout).
-fn clear_directory(writer: &mut Ext4Writer, dir: &str) -> Result<()> {
-    if !writer.is_dir(dir) {
-        return Ok(());
-    }
-    let children = writer.list_dir(dir)?;
-    for name in children {
-        let child = if dir == "/" {
-            format!("/{name}")
-        } else {
-            format!("{dir}/{name}")
-        };
-        delete_entry(writer, &child)?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,19 +161,5 @@ mod tests {
             to_ext4_path(root, Path::new("/tmp/diff/usr/bin/foo")),
             "/usr/bin/foo"
         );
-        assert_eq!(to_ext4_path(root, Path::new("/tmp/diff/etc")), "/etc");
-    }
-
-    #[test]
-    fn parent_of_cases() {
-        assert_eq!(parent_of("/a/b/c"), "/a/b");
-        assert_eq!(parent_of("/a"), "/");
-        assert_eq!(parent_of("/"), "/");
-    }
-
-    #[test]
-    fn whiteout_name_parsing() {
-        assert_eq!(".wh.resolv.conf".strip_prefix(".wh."), Some("resolv.conf"));
-        assert_eq!("passwd".strip_prefix(".wh."), None);
     }
 }

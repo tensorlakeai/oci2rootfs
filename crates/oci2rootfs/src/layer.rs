@@ -2,41 +2,42 @@ use std::io::Read;
 
 use tar::{Archive, EntryType};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::ext4::Ext4Writer;
+use crate::path::{Whiteout, join, parent_of, parse_oci_whiteout, sanitize_entry_path};
 
 /// Apply a single OCI layer (tar stream) to the ext4 writer.
 ///
-/// Processes tar entries in order, handling whiteout files per the OCI spec.
+/// Processes tar entries in order, sanitizing each entry path per
+/// [`sanitize_entry_path`] (rejecting `..` components and NUL bytes) and
+/// applying OCI whiteout semantics (`.wh.<name>` deletes, `.wh..wh..opq`
+/// clears the parent directory).
 pub fn apply_layer(reader: impl Read, writer: &mut Ext4Writer) -> Result<()> {
     let mut archive = Archive::new(reader);
 
     for entry_result in archive.entries()? {
         let mut entry = entry_result?;
-        let raw_path = entry.path()?.to_path_buf();
-        let path_str = normalize_path(&raw_path);
+        let raw_path = entry.path()?.into_owned();
+        let path_str = sanitize_entry_path(&raw_path)?;
 
-        // Skip root directory entry
         if path_str == "/" {
             continue;
         }
 
-        // Check for whiteout markers
-        if let Some(whiteout) = parse_whiteout(&path_str) {
-            match whiteout {
-                Whiteout::Delete(target) => {
-                    delete_entry(writer, &target)?;
-                }
-                Whiteout::Opaque(dir) => {
-                    clear_directory(writer, &dir)?;
-                }
+        if let Some(leaf) = raw_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .and_then(parse_oci_whiteout)
+        {
+            let parent = parent_of(&path_str);
+            match leaf {
+                Whiteout::Delete(name) => writer.delete(&join(&parent, name))?,
+                Whiteout::Opaque => writer.clear_dir(&parent)?,
             }
             continue;
         }
 
-        // Process normal tar entries
-        let entry_type = entry.header().entry_type();
-        match entry_type {
+        match entry.header().entry_type() {
             EntryType::Regular | EntryType::GNUSparse => {
                 let mode = entry.header().mode().unwrap_or(0o644);
                 let uid = entry.header().uid().unwrap_or(0) as u32;
@@ -51,25 +52,27 @@ pub fn apply_layer(reader: impl Read, writer: &mut Ext4Writer) -> Result<()> {
                 writer.set_owner(&path_str, uid, gid)?;
             }
             EntryType::Symlink => {
-                if let Some(target) = entry.link_name()? {
-                    let target_str = target.to_string_lossy().to_string();
-                    writer.symlink(&target_str, &path_str)?;
-                }
+                let target = entry.link_name()?.ok_or_else(|| {
+                    Error::InvalidTarPath(format!("symlink without target: {path_str}"))
+                })?;
+                let target_str = target
+                    .to_str()
+                    .ok_or_else(|| {
+                        Error::InvalidTarPath(format!("non-UTF-8 symlink target: {path_str}"))
+                    })?
+                    .to_string();
+                reject_nul(&target_str, &path_str)?;
+                writer.symlink(&target_str, &path_str)?;
             }
             EntryType::Link => {
-                if let Some(target) = entry.link_name()? {
-                    let target_str = normalize_path(&target);
-                    writer.link(&target_str, &path_str)?;
-                }
+                let target = entry.link_name()?.ok_or_else(|| {
+                    Error::InvalidTarPath(format!("hardlink without target: {path_str}"))
+                })?;
+                let target_str = sanitize_entry_path(&target)?;
+                writer.link(&target_str, &path_str)?;
             }
-            EntryType::Char | EntryType::Block => {
-                eprintln!(
-                    "warning: skipping device node: {} (ext4-lwext4 has no mknod support)",
-                    path_str
-                );
-            }
-            EntryType::Fifo => {
-                eprintln!("warning: skipping FIFO: {}", path_str);
+            EntryType::Char | EntryType::Block | EntryType::Fifo => {
+                // arcbox-ext4 has no mknod support; skip.
             }
             _ => {
                 // XHeader, GNULongName, GNULongLink, etc.
@@ -81,97 +84,12 @@ pub fn apply_layer(reader: impl Read, writer: &mut Ext4Writer) -> Result<()> {
     Ok(())
 }
 
-/// Whiteout type detected from a path.
-enum Whiteout {
-    /// Delete a specific file/directory.
-    Delete(String),
-    /// Clear all entries in a directory (opaque whiteout).
-    Opaque(String),
-}
-
-/// Parse a path to detect OCI whiteout markers.
-///
-/// - `.wh..wh..opq` in a directory → Opaque(parent_dir)
-/// - `.wh.<name>` in a directory → Delete(parent_dir/<name>)
-fn parse_whiteout(path: &str) -> Option<Whiteout> {
-    let file_name = path.rsplit('/').next()?;
-
-    if file_name == ".wh..wh..opq" {
-        // Opaque whiteout: clear the parent directory
-        let parent = parent_dir(path);
-        return Some(Whiteout::Opaque(parent));
+fn reject_nul(value: &str, owner_path: &str) -> Result<()> {
+    if value.contains('\0') {
+        return Err(Error::InvalidTarPath(format!(
+            "NUL byte in tar entry target at {owner_path}"
+        )));
     }
-
-    if let Some(name) = file_name.strip_prefix(".wh.")
-        && !name.is_empty()
-    {
-        // Regular whiteout: delete the named entry
-        let parent = parent_dir(path);
-        let target = if parent == "/" {
-            format!("/{name}")
-        } else {
-            format!("{parent}/{name}")
-        };
-        return Some(Whiteout::Delete(target));
-    }
-
-    None
-}
-
-/// Get the parent directory of a path.
-fn parent_dir(path: &str) -> String {
-    let path = path.trim_end_matches('/');
-    match path.rfind('/') {
-        Some(0) | None => "/".to_string(),
-        Some(pos) => path[..pos].to_string(),
-    }
-}
-
-/// Normalize a tar entry path to an absolute ext4 path.
-///
-/// - Strips leading "./" prefix
-/// - Ensures leading "/"
-/// - Removes trailing "/" (except for root)
-fn normalize_path(path: &std::path::Path) -> String {
-    let s = path.to_string_lossy();
-    let s = s.strip_prefix("./").unwrap_or(&s);
-    let s = s.strip_prefix('.').unwrap_or(s);
-
-    if s.is_empty() || s == "/" {
-        "/".to_string()
-    } else if s.starts_with('/') {
-        s.trim_end_matches('/').to_string()
-    } else {
-        format!("/{}", s.trim_end_matches('/'))
-    }
-}
-
-/// Delete a file or directory from the ext4 image.
-fn delete_entry(writer: &mut Ext4Writer, path: &str) -> Result<()> {
-    if writer.is_dir(path) {
-        writer.rmdir(path)?;
-    } else if writer.exists(path) {
-        writer.remove(path)?;
-    }
-    Ok(())
-}
-
-/// Clear all entries in a directory (opaque whiteout).
-fn clear_directory(writer: &mut Ext4Writer, dir: &str) -> Result<()> {
-    if !writer.is_dir(dir) {
-        return Ok(());
-    }
-
-    let entries = writer.list_dir(dir)?;
-    for name in entries {
-        let child_path = if dir == "/" {
-            format!("/{name}")
-        } else {
-            format!("{dir}/{name}")
-        };
-        delete_entry(writer, &child_path)?;
-    }
-
     Ok(())
 }
 
@@ -192,6 +110,26 @@ mod tests {
         let file = NamedTempFile::new().unwrap();
         let writer = Ext4Writer::create(file.path(), TEST_SIZE).unwrap();
         (writer, file)
+    }
+
+    enum TarEntry {
+        File {
+            path: &'static str,
+            data: Vec<u8>,
+            mode: u32,
+        },
+        Dir {
+            path: &'static str,
+            mode: u32,
+        },
+        Symlink {
+            path: &'static str,
+            target: &'static str,
+        },
+        Hardlink {
+            path: &'static str,
+            target: &'static str,
+        },
     }
 
     fn build_tar(entries: &[TarEntry]) -> Vec<u8> {
@@ -245,134 +183,30 @@ mod tests {
         builder.into_inner().unwrap()
     }
 
-    enum TarEntry {
-        File {
-            path: &'static str,
-            data: Vec<u8>,
-            mode: u32,
-        },
-        Dir {
-            path: &'static str,
-            mode: u32,
-        },
-        Symlink {
-            path: &'static str,
-            target: &'static str,
-        },
-        Hardlink {
-            path: &'static str,
-            target: &'static str,
-        },
-    }
-
-    #[test]
-    fn test_normalize_path() {
-        assert_eq!(
-            normalize_path(std::path::Path::new("./usr/bin/foo")),
-            "/usr/bin/foo"
-        );
-        assert_eq!(
-            normalize_path(std::path::Path::new("usr/bin/foo")),
-            "/usr/bin/foo"
-        );
-        assert_eq!(
-            normalize_path(std::path::Path::new("/usr/bin/foo")),
-            "/usr/bin/foo"
-        );
-        assert_eq!(normalize_path(std::path::Path::new(".")), "/");
-        assert_eq!(normalize_path(std::path::Path::new("./")), "/");
-        assert_eq!(normalize_path(std::path::Path::new("./etc/")), "/etc");
-    }
-
-    #[test]
-    fn test_parse_whiteout_delete() {
-        let wh = parse_whiteout("/etc/.wh.resolv.conf");
-        assert!(matches!(wh, Some(Whiteout::Delete(ref p)) if p == "/etc/resolv.conf"));
-    }
-
-    #[test]
-    fn test_parse_whiteout_opaque() {
-        let wh = parse_whiteout("/var/cache/.wh..wh..opq");
-        assert!(matches!(wh, Some(Whiteout::Opaque(ref p)) if p == "/var/cache"));
-    }
-
-    #[test]
-    fn test_parse_whiteout_none() {
-        assert!(parse_whiteout("/usr/bin/foo").is_none());
-        assert!(parse_whiteout("/etc/passwd").is_none());
-    }
-
-    #[test]
-    fn test_parse_whiteout_root_level() {
-        let wh = parse_whiteout("/.wh.foo");
-        assert!(matches!(wh, Some(Whiteout::Delete(ref p)) if p == "/foo"));
-    }
-
-    #[test]
-    fn test_parent_dir_root_child() {
-        assert_eq!(parent_dir("/foo"), "/");
-    }
-
-    #[test]
-    fn test_parent_dir_nested() {
-        assert_eq!(parent_dir("/a/b/c"), "/a/b");
-    }
-
-    #[test]
-    fn test_parent_dir_root() {
-        assert_eq!(parent_dir("/"), "/");
-    }
-
-    #[test]
-    fn test_normalize_path_trailing_slash() {
-        assert_eq!(normalize_path(std::path::Path::new("/usr/")), "/usr");
-    }
-
     #[test]
     #[serial]
-    fn apply_layer_regular_files() {
-        let (mut writer, _file) = create_writer();
-        let tar_data = build_tar(&[
-            TarEntry::File {
-                path: "hello.txt",
-                data: b"hello".to_vec(),
-                mode: 0o644,
-            },
-            TarEntry::File {
-                path: "world.txt",
-                data: b"world".to_vec(),
-                mode: 0o644,
-            },
-        ]);
-        apply_layer(Cursor::new(tar_data), &mut writer).unwrap();
-        assert!(writer.exists("/hello.txt"));
-        assert!(writer.exists("/world.txt"));
-        writer.finish().unwrap();
-    }
-
-    #[test]
-    #[serial]
-    fn apply_layer_directories() {
+    fn applies_regular_files_and_directories() {
         let (mut writer, _file) = create_writer();
         let tar_data = build_tar(&[
             TarEntry::Dir {
                 path: "etc/",
                 mode: 0o755,
             },
-            TarEntry::Dir {
-                path: "etc/config/",
-                mode: 0o755,
+            TarEntry::File {
+                path: "etc/hello.txt",
+                data: b"hello".to_vec(),
+                mode: 0o644,
             },
         ]);
         apply_layer(Cursor::new(tar_data), &mut writer).unwrap();
         assert!(writer.is_dir("/etc"));
-        assert!(writer.is_dir("/etc/config"));
+        assert!(writer.exists("/etc/hello.txt"));
         writer.finish().unwrap();
     }
 
     #[test]
     #[serial]
-    fn apply_layer_symlink() {
+    fn applies_symlink_and_hardlink() {
         let (mut writer, _file) = create_writer();
         let tar_data = build_tar(&[
             TarEntry::File {
@@ -381,100 +215,246 @@ mod tests {
                 mode: 0o644,
             },
             TarEntry::Symlink {
-                path: "link.txt",
+                path: "slink",
                 target: "/target.txt",
             },
-        ]);
-        apply_layer(Cursor::new(tar_data), &mut writer).unwrap();
-        assert!(writer.exists("/target.txt"));
-        assert!(writer.exists("/link.txt"));
-        writer.finish().unwrap();
-    }
-
-    #[test]
-    #[serial]
-    fn apply_layer_hardlink() {
-        let (mut writer, _file) = create_writer();
-        let tar_data = build_tar(&[
-            TarEntry::File {
-                path: "original.txt",
-                data: b"data".to_vec(),
-                mode: 0o644,
-            },
             TarEntry::Hardlink {
-                path: "hardlink.txt",
-                target: "original.txt",
+                path: "hlink",
+                target: "target.txt",
             },
         ]);
         apply_layer(Cursor::new(tar_data), &mut writer).unwrap();
-        assert!(writer.exists("/original.txt"));
-        assert!(writer.exists("/hardlink.txt"));
+        assert!(writer.exists("/slink"));
+        assert!(writer.exists("/hlink"));
         writer.finish().unwrap();
     }
 
     #[test]
     #[serial]
-    fn apply_layer_whiteout_delete() {
+    fn whiteout_delete_removes_prior_entry() {
         let (mut writer, _file) = create_writer();
-        let base = build_tar(&[TarEntry::File {
-            path: "etc/removeme.conf",
-            data: b"config".to_vec(),
-            mode: 0o644,
-        }]);
-        apply_layer(Cursor::new(base), &mut writer).unwrap();
+        apply_layer(
+            Cursor::new(build_tar(&[TarEntry::File {
+                path: "etc/removeme.conf",
+                data: b"config".to_vec(),
+                mode: 0o644,
+            }])),
+            &mut writer,
+        )
+        .unwrap();
         assert!(writer.exists("/etc/removeme.conf"));
 
-        let overlay = build_tar(&[TarEntry::File {
-            path: "etc/.wh.removeme.conf",
-            data: vec![],
-            mode: 0o644,
-        }]);
-        apply_layer(Cursor::new(overlay), &mut writer).unwrap();
+        apply_layer(
+            Cursor::new(build_tar(&[TarEntry::File {
+                path: "etc/.wh.removeme.conf",
+                data: vec![],
+                mode: 0o644,
+            }])),
+            &mut writer,
+        )
+        .unwrap();
         assert!(!writer.exists("/etc/removeme.conf"));
-
         writer.finish().unwrap();
     }
 
     #[test]
     #[serial]
-    fn apply_layer_whiteout_opaque() {
+    fn whiteout_opaque_clears_directory_contents() {
         let (mut writer, _file) = create_writer();
-        let base = build_tar(&[
-            TarEntry::Dir {
-                path: "var/cache/",
-                mode: 0o755,
-            },
-            TarEntry::File {
-                path: "var/cache/a.txt",
-                data: b"a".to_vec(),
-                mode: 0o644,
-            },
-            TarEntry::File {
-                path: "var/cache/b.txt",
-                data: b"b".to_vec(),
-                mode: 0o644,
-            },
-        ]);
-        apply_layer(Cursor::new(base), &mut writer).unwrap();
-        assert!(writer.exists("/var/cache/a.txt"));
-        assert!(writer.exists("/var/cache/b.txt"));
+        apply_layer(
+            Cursor::new(build_tar(&[
+                TarEntry::Dir {
+                    path: "var/cache/",
+                    mode: 0o755,
+                },
+                TarEntry::File {
+                    path: "var/cache/a.txt",
+                    data: b"a".to_vec(),
+                    mode: 0o644,
+                },
+                TarEntry::File {
+                    path: "var/cache/b.txt",
+                    data: b"b".to_vec(),
+                    mode: 0o644,
+                },
+            ])),
+            &mut writer,
+        )
+        .unwrap();
 
-        let overlay = build_tar(&[TarEntry::File {
-            path: "var/cache/.wh..wh..opq",
-            data: vec![],
-            mode: 0o644,
-        }]);
-        apply_layer(Cursor::new(overlay), &mut writer).unwrap();
+        apply_layer(
+            Cursor::new(build_tar(&[TarEntry::File {
+                path: "var/cache/.wh..wh..opq",
+                data: vec![],
+                mode: 0o644,
+            }])),
+            &mut writer,
+        )
+        .unwrap();
+
+        assert!(writer.is_dir("/var/cache"));
         assert!(!writer.exists("/var/cache/a.txt"));
         assert!(!writer.exists("/var/cache/b.txt"));
-        assert!(writer.is_dir("/var/cache"));
-
         writer.finish().unwrap();
     }
 
     #[test]
     #[serial]
-    fn apply_layer_gzip_after_decompression() {
+    fn whiteout_opaque_recursively_clears_nested_directories() {
+        let (mut writer, _file) = create_writer();
+        apply_layer(
+            Cursor::new(build_tar(&[
+                TarEntry::Dir {
+                    path: "cache/",
+                    mode: 0o755,
+                },
+                TarEntry::Dir {
+                    path: "cache/sub/",
+                    mode: 0o755,
+                },
+                TarEntry::File {
+                    path: "cache/sub/nested.txt",
+                    data: b"x".to_vec(),
+                    mode: 0o644,
+                },
+            ])),
+            &mut writer,
+        )
+        .unwrap();
+
+        apply_layer(
+            Cursor::new(build_tar(&[TarEntry::File {
+                path: "cache/.wh..wh..opq",
+                data: vec![],
+                mode: 0o644,
+            }])),
+            &mut writer,
+        )
+        .unwrap();
+
+        assert!(writer.is_dir("/cache"));
+        assert!(!writer.exists("/cache/sub"));
+        assert!(!writer.exists("/cache/sub/nested.txt"));
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn multi_layer_delete_then_recreate() {
+        let (mut writer, _file) = create_writer();
+        apply_layer(
+            Cursor::new(build_tar(&[TarEntry::File {
+                path: "file.txt",
+                data: b"first".to_vec(),
+                mode: 0o644,
+            }])),
+            &mut writer,
+        )
+        .unwrap();
+        apply_layer(
+            Cursor::new(build_tar(&[TarEntry::File {
+                path: ".wh.file.txt",
+                data: vec![],
+                mode: 0o644,
+            }])),
+            &mut writer,
+        )
+        .unwrap();
+        apply_layer(
+            Cursor::new(build_tar(&[TarEntry::File {
+                path: "file.txt",
+                data: b"third".to_vec(),
+                mode: 0o644,
+            }])),
+            &mut writer,
+        )
+        .unwrap();
+
+        assert!(writer.exists("/file.txt"));
+        writer.finish().unwrap();
+    }
+
+    /// Build a single-entry tar byte stream, bypassing the `tar::Builder`
+    /// validation that refuses `..` in names/link targets. Needed so we can
+    /// exercise the defensive path-sanitizer with input a normal builder
+    /// could never produce.
+    fn build_raw_tar(name: &str, typeflag: u8, link_name: Option<&str>, data: &[u8]) -> Vec<u8> {
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_mode(0o644);
+        header.set_uid(0);
+        header.set_gid(0);
+        header.set_size(data.len() as u64);
+        header.set_mtime(0);
+
+        let bytes = header.as_mut_bytes();
+        bytes[0..100].fill(0);
+        let name_bytes = name.as_bytes();
+        let n = name_bytes.len().min(100);
+        bytes[..n].copy_from_slice(&name_bytes[..n]);
+
+        bytes[156] = typeflag;
+
+        if let Some(target) = link_name {
+            bytes[157..257].fill(0);
+            let target_bytes = target.as_bytes();
+            let n = target_bytes.len().min(100);
+            bytes[157..157 + n].copy_from_slice(&target_bytes[..n]);
+        }
+
+        header.set_cksum();
+
+        let mut out = Vec::new();
+        out.extend_from_slice(header.as_bytes());
+        out.extend_from_slice(data);
+        let pad = (512 - (data.len() % 512)) % 512;
+        out.extend(std::iter::repeat_n(0u8, pad));
+        out.extend(std::iter::repeat_n(0u8, 1024));
+        out
+    }
+
+    #[test]
+    #[serial]
+    fn rejects_parent_dir_traversal_in_entry_path() {
+        let (mut writer, _file) = create_writer();
+        let tar_data = build_raw_tar("../etc/passwd", b'0', None, b"hostile");
+        let err = apply_layer(Cursor::new(tar_data), &mut writer).unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidTarPath(_)),
+            "expected InvalidTarPath, got {err:?}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn rejects_parent_dir_in_hardlink_target() {
+        let (mut writer, _file) = create_writer();
+        apply_layer(
+            Cursor::new(build_tar(&[TarEntry::File {
+                path: "target.txt",
+                data: b"data".to_vec(),
+                mode: 0o644,
+            }])),
+            &mut writer,
+        )
+        .unwrap();
+
+        let tar_data = build_raw_tar("link", b'1', Some("../target.txt"), b"");
+        let err = apply_layer(Cursor::new(tar_data), &mut writer).unwrap_err();
+        assert!(matches!(err, Error::InvalidTarPath(_)));
+    }
+
+    #[test]
+    #[serial]
+    fn empty_tar_archive_is_ok() {
+        let (mut writer, _file) = create_writer();
+        apply_layer(Cursor::new(build_tar(&[])), &mut writer).unwrap();
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn applies_gzipped_layer() {
         let (mut writer, _file) = create_writer();
         let tar_data = build_tar(&[TarEntry::File {
             path: "compressed.txt",

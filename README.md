@@ -51,8 +51,7 @@ Converter::new("rootfs.ext4")
     )?;
 
 // Local auto-detect (OCI layout or overlay2 path)
-Converter::new("rootfs.ext4")
-    .convert(autodetect("./some-path", Platform::default())?)?;
+Converter::new("rootfs.ext4").convert(autodetect("./some-path")?)?;
 
 // Remote registry (default feature: `remote`)
 # #[cfg(feature = "remote")]
@@ -69,8 +68,30 @@ Converter::new("rootfs.ext4").convert(source)?;
 # }
 ```
 
-Use `default-features = false` on the library dependency when you only need
-local OCI layout and overlay2 support and want to drop the remote pull stack.
+### Feature flags
+
+| Feature | Default | Pulls in |
+|---------|---------|----------|
+| `remote` | yes | `containerregistry-registry`, `containerregistry-auth`, `tokio`, `reqwest`, TLS stack |
+
+Add `default-features = false` on the library dependency to drop the remote
+pull stack when you only need OCI layout and Docker overlay2 support:
+
+```toml
+[dependencies]
+oci2rootfs = { version = "0.1", default-features = false }
+```
+
+### Known limitations
+
+- **Remote pull buffers every layer blob in memory** before applying. For
+  multi-gigabyte images this requires proportional heap; prefer spooling to an
+  OCI layout on disk for large images (e.g. via `skopeo copy docker://<ref>
+  oci:./layout:latest`, then `OciLayoutSource::open`).
+- **Layer downloads are serial.** Parallel fetches could reduce wall time for
+  images with many small layers but would complicate progress reporting.
+- **No device-node support.** `mknod`-created entries in tar layers (char/
+  block/FIFO) are skipped silently; overlay2 `.wh.<name>` files cover deletion.
 
 ## Build
 
@@ -86,11 +107,12 @@ crates/
 │   └── src/
 │       ├── convert.rs   # High-level Converter API
 │       ├── error.rs     # Error types
-│       ├── ext4.rs      # ext4 image writer (lwext4)
+│       ├── ext4.rs      # ext4 image writer (arcbox-ext4)
 │       ├── layer.rs     # Tar layer application with whiteout support
 │       ├── oci.rs       # OCI Image Layout resolution
 │       ├── overlay2/    # Docker overlay2 resolution and apply
-│       ├── pull.rs      # Remote registry pull
+│       ├── path.rs      # Shared path sanitation + whiteout parsing
+│       ├── pull.rs      # Remote registry pull (feature = "remote")
 │       └── tar_source.rs # Shared tar-layer source plumbing
 └── oci2rootfs-cli/      # CLI binary
     └── src/

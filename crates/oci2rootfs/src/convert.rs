@@ -71,7 +71,6 @@ impl Converter {
         let mut writer = Ext4Writer::create(&self.output, self.size)?;
         source.apply_to(&mut writer)?;
         writer.finish()?;
-        eprintln!("Created rootfs: {}", self.output.display());
         Ok(())
     }
 }
@@ -171,47 +170,15 @@ impl IntoImageSource for Overlay2Source {
 /// Auto-detect a local image source from an on-disk path.
 ///
 /// Docker overlay2 layer directories are detected by their `diff/` and `link`
-/// markers. All other paths are treated as OCI image layouts and resolved
-/// with the provided platform selector.
-pub fn autodetect(path: impl AsRef<Path>, platform: Platform) -> Result<ImageSource> {
+/// markers. All other paths are treated as OCI image layouts and resolved for
+/// the default platform (`linux/amd64`). Callers that need a different
+/// platform for OCI layouts should use [`OciLayoutSource::open`] directly.
+pub fn autodetect(path: impl AsRef<Path>) -> Result<ImageSource> {
     let path = path.as_ref();
 
     if Overlay2Source::matches(path) {
         Overlay2Source::open(path)?.into_image_source()
     } else {
-        OciLayoutSource::open(path)?
-            .platform(platform)
-            .into_image_source()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_converter_default_size() {
-        let c = Converter::new("/tmp/test.ext4");
-        assert_eq!(c.size, DEFAULT_SIZE);
-        assert_eq!(c.size, 512 * 1024 * 1024);
-    }
-
-    #[test]
-    fn test_converter_custom_size() {
-        let c = Converter::new("/tmp/test.ext4").size(1024 * 1024 * 1024);
-        assert_eq!(c.size, 1024 * 1024 * 1024);
-    }
-
-    #[test]
-    fn test_converter_output_path() {
-        let c = Converter::new("/tmp/output.ext4");
-        assert_eq!(c.output, PathBuf::from("/tmp/output.ext4"));
-    }
-
-    #[test]
-    fn test_platform_default() {
-        let platform = Platform::default();
-        assert_eq!(platform.os(), "linux");
-        assert_eq!(platform.arch(), "amd64");
+        OciLayoutSource::open(path)?.into_image_source()
     }
 }

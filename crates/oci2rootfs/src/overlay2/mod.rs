@@ -35,7 +35,7 @@ pub(crate) struct Overlay2Archive {
 ///
 /// Returns `true` when the directory contains both `diff/` and `link`,
 /// which are characteristic of Docker's overlay2 storage.
-pub fn is_overlay2(path: &Path) -> bool {
+pub(crate) fn is_overlay2(path: &Path) -> bool {
     path.is_dir() && path.join("diff").is_dir() && path.join("link").is_file()
 }
 
@@ -44,7 +44,7 @@ pub fn is_overlay2(path: &Path) -> bool {
 /// `path` must be the chain-id directory (e.g.
 /// `/var/lib/docker/overlay2/<chain-id>`). The function reads `lower`
 /// references to discover all layers and returns them bottom-to-top.
-pub fn resolve(path: &Path) -> Result<Overlay2Archive> {
+pub(crate) fn resolve(path: &Path) -> Result<Overlay2Archive> {
     let diff = path.join("diff");
     if !diff.is_dir() {
         return Err(Error::UnsupportedFormat(format!(
@@ -131,13 +131,7 @@ impl SourceImpl for Overlay2Archive {
     }
 
     fn apply_to(&self, writer: &mut Ext4Writer) -> Result<()> {
-        for (i, diff_dir) in self.layers.iter().enumerate() {
-            eprintln!(
-                "Applying overlay2 layer {}/{}: {}",
-                i + 1,
-                self.layers.len(),
-                diff_dir.display()
-            );
+        for diff_dir in &self.layers {
             apply::apply_directory_layer(diff_dir, writer)?;
         }
         Ok(())

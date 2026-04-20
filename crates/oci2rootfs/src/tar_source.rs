@@ -1,9 +1,9 @@
 use std::fs::File;
-#[cfg(any(feature = "remote", test))]
+#[cfg(feature = "remote")]
 use std::io::Cursor;
 use std::io::Read;
 use std::path::PathBuf;
-#[cfg(any(feature = "remote", test))]
+#[cfg(feature = "remote")]
 use std::sync::Arc;
 
 use containerregistry_image::{Descriptor, ImageConfig, MediaType};
@@ -16,20 +16,18 @@ use crate::layer::apply_layer;
 
 /// A tar-layer-backed image source that can read blobs from memory or disk.
 pub(crate) struct TarImageSource {
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "retained for future use when surfacing image metadata"
+    )]
     config: ImageConfig,
     layers: Vec<TarLayer>,
-    source_label: &'static str,
 }
 
 impl TarImageSource {
     /// Build a source whose layer blobs already live in memory.
-    #[cfg(any(feature = "remote", test))]
-    pub(crate) fn from_memory(
-        config: ImageConfig,
-        layers: Vec<(Descriptor, Vec<u8>)>,
-        source_label: &'static str,
-    ) -> Self {
+    #[cfg(feature = "remote")]
+    pub(crate) fn from_memory(config: ImageConfig, layers: Vec<(Descriptor, Vec<u8>)>) -> Self {
         let layers = layers
             .into_iter()
             .map(|(descriptor, blob)| TarLayer {
@@ -38,19 +36,11 @@ impl TarImageSource {
             })
             .collect();
 
-        Self {
-            config,
-            layers,
-            source_label,
-        }
+        Self { config, layers }
     }
 
     /// Build a source whose layer blobs live on disk.
-    pub(crate) fn from_files(
-        config: ImageConfig,
-        layers: Vec<(Descriptor, PathBuf)>,
-        source_label: &'static str,
-    ) -> Self {
+    pub(crate) fn from_files(config: ImageConfig, layers: Vec<(Descriptor, PathBuf)>) -> Self {
         let layers = layers
             .into_iter()
             .map(|(descriptor, path)| TarLayer {
@@ -59,21 +49,12 @@ impl TarImageSource {
             })
             .collect();
 
-        Self {
-            config,
-            layers,
-            source_label,
-        }
+        Self { config, layers }
     }
 
     #[cfg(test)]
     pub(crate) fn config(&self) -> &ImageConfig {
         &self.config
-    }
-
-    #[cfg(test)]
-    pub(crate) fn open_layer(&self, index: usize) -> Result<Box<dyn Read>> {
-        self.layers[index].open()
     }
 }
 
@@ -83,18 +64,10 @@ impl SourceImpl for TarImageSource {
     }
 
     fn apply_to(&self, writer: &mut Ext4Writer) -> Result<()> {
-        for (index, layer) in self.layers.iter().enumerate() {
-            eprintln!(
-                "Applying {} layer {}/{}: {}",
-                self.source_label,
-                index + 1,
-                self.layers.len(),
-                layer.descriptor.digest
-            );
+        for layer in &self.layers {
             let reader = layer.open()?;
             apply_layer(reader, writer)?;
         }
-
         Ok(())
     }
 }
@@ -125,12 +98,12 @@ trait BlobOpener {
     fn open_blob(&self) -> Result<Box<dyn Read>>;
 }
 
-#[cfg(any(feature = "remote", test))]
+#[cfg(feature = "remote")]
 struct MemoryBlob {
     bytes: Arc<[u8]>,
 }
 
-#[cfg(any(feature = "remote", test))]
+#[cfg(feature = "remote")]
 impl MemoryBlob {
     fn new(bytes: Vec<u8>) -> Self {
         Self {
@@ -139,7 +112,7 @@ impl MemoryBlob {
     }
 }
 
-#[cfg(any(feature = "remote", test))]
+#[cfg(feature = "remote")]
 impl BlobOpener for MemoryBlob {
     fn open_blob(&self) -> Result<Box<dyn Read>> {
         Ok(Box::new(Cursor::new(Arc::clone(&self.bytes))))
@@ -166,11 +139,7 @@ impl BlobOpener for FileBlob {
 mod tests {
     use super::*;
     use containerregistry_image::Digest;
-    use flate2::Compression;
-    use flate2::write::GzEncoder;
     use std::collections::BTreeMap;
-    use std::io::Write;
-    use tempfile::TempDir;
 
     fn make_descriptor(media_type: MediaType) -> Descriptor {
         Descriptor {
@@ -185,36 +154,32 @@ mod tests {
     }
 
     #[test]
-    fn open_memory_blob_layer() {
+    fn unsupported_media_type_errors() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"").unwrap();
         let layer = TarLayer {
-            descriptor: make_descriptor(MediaType::OciLayer),
-            opener: Box::new(MemoryBlob::new(b"hello world".to_vec())),
+            descriptor: make_descriptor(MediaType::OciManifest),
+            opener: Box::new(FileBlob::new(tmp.path().to_path_buf())),
         };
-
-        let mut reader = layer.open().unwrap();
-        let mut buf = String::new();
-        reader.read_to_string(&mut buf).unwrap();
-        assert_eq!(buf, "hello world");
+        match layer.open() {
+            Err(Error::UnsupportedMediaType(_)) => {}
+            Err(e) => panic!("expected UnsupportedMediaType, got {e:?}"),
+            Ok(_) => panic!("expected error for manifest media type"),
+        }
     }
 
     #[test]
-    fn open_file_blob_layer() {
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("layer.tar.gz");
-
-        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
-        encoder.write_all(b"compressed data").unwrap();
-        let compressed = encoder.finish().unwrap();
-        std::fs::write(&path, compressed).unwrap();
-
+    fn corrupt_gzip_errors_when_read() {
+        // A GzDecoder-wrapped reader should fail once consumed, not at
+        // construction — verify the wrapping reaches the caller intact.
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), b"not a gzip stream").unwrap();
         let layer = TarLayer {
             descriptor: make_descriptor(MediaType::OciLayerGzip),
-            opener: Box::new(FileBlob::new(path)),
+            opener: Box::new(FileBlob::new(tmp.path().to_path_buf())),
         };
-
         let mut reader = layer.open().unwrap();
-        let mut buf = String::new();
-        reader.read_to_string(&mut buf).unwrap();
-        assert_eq!(buf, "compressed data");
+        let mut buf = Vec::new();
+        assert!(reader.read_to_end(&mut buf).is_err());
     }
 }

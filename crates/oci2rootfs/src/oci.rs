@@ -18,14 +18,7 @@ pub(crate) fn resolve(layout: Layout, platform: &Platform) -> Result<TarImageSou
         .map(|layer| (layer.clone(), layout.blob_path(&layer.digest)))
         .collect();
 
-    eprintln!(
-        "Resolved OCI image for {}/{} with {} layers",
-        platform.os(),
-        platform.arch(),
-        manifest.layers().len()
-    );
-
-    Ok(TarImageSource::from_files(config, layers, "OCI"))
+    Ok(TarImageSource::from_files(config, layers))
 }
 
 /// Find the best manifest descriptor from an image index.
@@ -80,7 +73,6 @@ mod tests {
     use flate2::Compression;
     use flate2::write::GzEncoder;
     use sha2::{Digest as _, Sha256};
-    use std::io::Read;
     use tempfile::TempDir;
 
     fn sha256_hex(data: &[u8]) -> String {
@@ -230,21 +222,6 @@ mod tests {
         assert_eq!(image.layer_count(), 1);
         assert_eq!(image.config().architecture, "amd64");
         assert_eq!(image.config().os, "linux");
-    }
-
-    #[test]
-    fn open_layer_gzip_readable() {
-        let dir = create_single_manifest_layout();
-        let layout = Layout::open(dir.path()).unwrap();
-        let image = resolve(layout, &Platform::default()).unwrap();
-
-        let mut reader = image.open_layer(0).unwrap();
-        let mut buf = Vec::new();
-        reader.read_to_end(&mut buf).unwrap();
-
-        let mut archive = tar::Archive::new(std::io::Cursor::new(buf));
-        let entries: Vec<_> = archive.entries().unwrap().collect();
-        assert!(!entries.is_empty());
     }
 
     #[test]

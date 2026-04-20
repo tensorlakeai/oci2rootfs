@@ -1,73 +1,53 @@
-use std::io::{Cursor, Read};
-
-use containerregistry::auth::AuthResolver;
-use containerregistry::image::{Descriptor, ImageConfig, ImageIndex, MediaType};
-use containerregistry::registry::{Client, ClientConfig, ManifestOrIndex, Reference};
-use flate2::read::GzDecoder;
-
+use crate::convert::{ImageSource, Platform};
 use crate::error::{Error, Result};
+use crate::tar_source::TarImageSource;
 
-/// Configuration for pulling images from registries.
-pub struct PullConfig {
-    /// Whether to allow insecure (HTTP) connections.
-    pub insecure: bool,
-    /// Target CPU architecture (default: "amd64").
-    pub arch: String,
-    /// Target operating system (default: "linux").
-    pub os: String,
+use containerregistry_auth::AuthResolver;
+use containerregistry_image::ImageIndex;
+use containerregistry_registry::{Client, ClientConfig, ManifestOrIndex, Reference};
+
+/// Builder for a remote registry reference that will be fetched into memory.
+pub struct RemoteRef {
+    reference: String,
+    platform: Platform,
+    insecure: bool,
 }
 
-impl Default for PullConfig {
-    fn default() -> Self {
+impl RemoteRef {
+    /// Create a remote reference builder from an image reference string.
+    pub fn new(reference: impl Into<String>) -> Self {
         Self {
+            reference: reference.into(),
+            platform: Platform::default(),
             insecure: false,
-            arch: "amd64".into(),
-            os: "linux".into(),
         }
     }
-}
 
-/// A pulled image with config and in-memory layer blobs.
-pub struct PulledImage {
-    pub config: ImageConfig,
-    layers: Vec<(Descriptor, Vec<u8>)>,
-}
-
-impl PulledImage {
-    /// Returns the number of layers.
-    pub fn layer_count(&self) -> usize {
-        self.layers.len()
+    /// Override the platform used when resolving the remote manifest.
+    pub fn platform(mut self, platform: Platform) -> Self {
+        self.platform = platform;
+        self
     }
 
-    /// Returns the layer descriptors.
-    pub fn layer_descriptors(&self) -> Vec<&Descriptor> {
-        self.layers.iter().map(|(d, _)| d).collect()
+    /// Allow insecure (HTTP) registry connections for this reference.
+    pub fn insecure(mut self, insecure: bool) -> Self {
+        self.insecure = insecure;
+        self
     }
 
-    /// Open a layer blob for reading, decompressing based on media type.
-    pub fn open_layer(&self, index: usize) -> Result<Box<dyn Read>> {
-        let (descriptor, blob) = &self.layers[index];
-        let cursor = Cursor::new(blob.clone());
-
-        match descriptor.media_type {
-            MediaType::OciLayerGzip | MediaType::DockerLayerGzip => {
-                Ok(Box::new(GzDecoder::new(cursor)))
-            }
-            MediaType::OciLayerZstd => Ok(Box::new(zstd::Decoder::new(cursor)?)),
-            MediaType::OciLayer => Ok(Box::new(cursor)),
-            ref other => Err(Error::UnsupportedMediaType(other.as_str().to_string())),
-        }
+    /// Fetch the remote image and materialize it into an in-memory [`ImageSource`].
+    pub async fn fetch(self) -> Result<ImageSource> {
+        Ok(ImageSource::new(
+            pull(&self.reference, self.insecure, &self.platform).await?,
+        ))
     }
 }
 
-/// Pull an image from a remote registry.
-///
-/// Resolves credentials from Docker config, fetches the manifest (handling
-/// image indexes for multi-arch), downloads all layer blobs and the config.
-pub async fn pull(reference_str: &str, config: &PullConfig) -> Result<PulledImage> {
+/// Pull an image from a remote registry and materialize its layers in memory.
+async fn pull(reference_str: &str, insecure: bool, platform: &Platform) -> Result<TarImageSource> {
     let reference: Reference = reference_str
         .parse()
-        .map_err(|e: containerregistry::registry::Error| Error::InvalidReference(e.to_string()))?;
+        .map_err(|e: containerregistry_registry::Error| Error::InvalidReference(e.to_string()))?;
 
     eprintln!(
         "Pulling {}/{} from {}",
@@ -76,39 +56,32 @@ pub async fn pull(reference_str: &str, config: &PullConfig) -> Result<PulledImag
         reference.registry()
     );
 
-    // Resolve credentials
     let resolver = AuthResolver::new();
     let credential = resolver.resolve_or_anonymous(reference.registry());
 
-    // Create client
     let client_config = ClientConfig::new()
-        .with_https(!config.insecure)
-        .with_insecure(config.insecure);
+        .with_https(!insecure)
+        .with_insecure(insecure);
     let client = Client::with_credential(client_config, credential)?;
 
-    // Fetch manifest or index
     let (manifest_or_index, _digest) = client.get_manifest(&reference).await?;
-
-    // Resolve to a platform-specific manifest
     let manifest = match manifest_or_index {
-        ManifestOrIndex::Manifest(m) => *m,
+        ManifestOrIndex::Manifest(manifest) => *manifest,
         ManifestOrIndex::Index(index) => {
-            resolve_platform_manifest(&client, &reference, &index, config).await?
+            resolve_platform_manifest(&client, &reference, &index, platform).await?
         }
     };
 
-    eprintln!("Downloading {} layers", manifest.layers().len());
+    let config_data = client
+        .get_blob(&reference, &manifest.config().digest)
+        .await?;
+    let config = containerregistry_image::ImageConfig::from_bytes(&config_data)?;
 
-    // Download config
-    let config_data = client.get_blob(&reference, &manifest.config().digest).await?;
-    let image_config = ImageConfig::from_bytes(&config_data)?;
-
-    // Download layers
-    let mut layers = Vec::new();
-    for (i, layer_desc) in manifest.layers().iter().enumerate() {
+    let mut layers = Vec::with_capacity(manifest.layers().len());
+    for (index, layer_desc) in manifest.layers().iter().enumerate() {
         eprintln!(
             "Downloading layer {}/{}: {} ({} bytes)",
-            i + 1,
+            index + 1,
             manifest.layers().len(),
             layer_desc.digest,
             layer_desc.size
@@ -117,37 +90,29 @@ pub async fn pull(reference_str: &str, config: &PullConfig) -> Result<PulledImag
         layers.push((layer_desc.clone(), blob));
     }
 
-    Ok(PulledImage {
-        config: image_config,
-        layers,
-    })
+    eprintln!(
+        "Pulled remote image for {}/{} with {} layers",
+        platform.os(),
+        platform.arch(),
+        layers.len()
+    );
+
+    Ok(TarImageSource::from_memory(config, layers, "remote"))
 }
 
-#[cfg(test)]
-impl PulledImage {
-    fn new_for_test(layers: Vec<(Descriptor, Vec<u8>)>) -> Self {
-        let config_json = br#"{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}"#;
-        Self {
-            config: ImageConfig::from_bytes(config_json).unwrap(),
-            layers,
-        }
-    }
-}
-
-/// Resolve a platform-specific manifest from an image index.
+/// Resolve a platform-specific manifest from a multi-platform image index.
 async fn resolve_platform_manifest(
     client: &Client,
     reference: &Reference,
     index: &ImageIndex,
-    config: &PullConfig,
-) -> Result<containerregistry::image::Manifest> {
-    eprintln!("Resolving platform {}/{}", config.os, config.arch);
+    platform: &Platform,
+) -> Result<containerregistry_image::Manifest> {
+    eprintln!("Resolving platform {}/{}", platform.os(), platform.arch());
 
     let desc = index
-        .find_platform(&config.arch, &config.os, None)
-        .ok_or_else(|| Error::NoManifest(format!("{}/{}", config.os, config.arch)))?;
+        .find_platform(platform.arch(), platform.os(), None)
+        .ok_or_else(|| Error::NoManifest(format!("{}/{}", platform.os(), platform.arch())))?;
 
-    // Fetch the platform-specific manifest by digest
     let manifest_ref = Reference::with_digest(
         reference.registry().to_string(),
         reference.repository().to_string(),
@@ -157,7 +122,7 @@ async fn resolve_platform_manifest(
     let (manifest_or_index, _) = client.get_manifest(&manifest_ref).await?;
 
     match manifest_or_index {
-        ManifestOrIndex::Manifest(m) => Ok(*m),
+        ManifestOrIndex::Manifest(manifest) => Ok(*manifest),
         ManifestOrIndex::Index(_) => Err(Error::UnsupportedMediaType(
             "nested image index not supported".into(),
         )),
@@ -167,7 +132,7 @@ async fn resolve_platform_manifest(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use containerregistry::image::Digest;
+    use containerregistry_image::{Descriptor, Digest, MediaType};
     use std::collections::BTreeMap;
     use std::io::Read;
 
@@ -184,70 +149,49 @@ mod tests {
     }
 
     #[test]
-    fn test_pull_config_default() {
-        let config = PullConfig::default();
-        assert!(!config.insecure);
-        assert_eq!(config.arch, "amd64");
-        assert_eq!(config.os, "linux");
+    fn remote_ref_defaults() {
+        let remote = RemoteRef::new("alpine:latest");
+        assert_eq!(remote.reference, "alpine:latest");
+        assert_eq!(remote.platform, Platform::default());
+        assert!(!remote.insecure);
     }
 
     #[test]
-    fn test_pulled_image_layer_count() {
-        let image = PulledImage::new_for_test(vec![
-            (make_descriptor(MediaType::OciLayer), vec![1, 2, 3]),
-        ]);
-        assert_eq!(image.layer_count(), 1);
+    fn tar_source_from_memory_reports_layer_count() {
+        let image = TarImageSource::from_memory(
+            containerregistry_image::ImageConfig::from_bytes(
+                br#"{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}"#,
+            )
+            .unwrap(),
+            vec![(make_descriptor(MediaType::OciLayer), vec![1, 2, 3])],
+            "remote",
+        );
+
+        assert_eq!(crate::convert::SourceImpl::layer_count(&image), 1);
     }
 
     #[test]
-    fn test_pulled_image_layer_descriptors() {
-        let desc = make_descriptor(MediaType::OciLayer);
-        let image = PulledImage::new_for_test(vec![(desc.clone(), vec![])]);
-        let descs = image.layer_descriptors();
-        assert_eq!(descs.len(), 1);
-        assert_eq!(descs[0].digest, desc.digest);
-    }
-
-    #[test]
-    fn test_open_layer_uncompressed() {
-        let data = b"hello world";
-        let image = PulledImage::new_for_test(vec![
-            (make_descriptor(MediaType::OciLayer), data.to_vec()),
-        ]);
-        let mut reader = image.open_layer(0).unwrap();
-        let mut buf = String::new();
-        reader.read_to_string(&mut buf).unwrap();
-        assert_eq!(buf, "hello world");
-    }
-
-    #[test]
-    fn test_open_layer_gzip() {
-        use flate2::write::GzEncoder;
+    fn tar_source_open_layer_gzip() {
         use flate2::Compression;
+        use flate2::write::GzEncoder;
         use std::io::Write;
 
         let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
         encoder.write_all(b"compressed data").unwrap();
         let compressed = encoder.finish().unwrap();
 
-        let image = PulledImage::new_for_test(vec![
-            (make_descriptor(MediaType::OciLayerGzip), compressed),
-        ]);
+        let image = TarImageSource::from_memory(
+            containerregistry_image::ImageConfig::from_bytes(
+                br#"{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}"#,
+            )
+            .unwrap(),
+            vec![(make_descriptor(MediaType::OciLayerGzip), compressed)],
+            "remote",
+        );
+
         let mut reader = image.open_layer(0).unwrap();
         let mut buf = String::new();
         reader.read_to_string(&mut buf).unwrap();
         assert_eq!(buf, "compressed data");
-    }
-
-    #[test]
-    fn test_open_layer_unsupported_media_type() {
-        let image = PulledImage::new_for_test(vec![
-            (make_descriptor(MediaType::OciManifest), vec![]),
-        ]);
-        match image.open_layer(0) {
-            Err(Error::UnsupportedMediaType(_)) => {} // expected
-            Err(e) => panic!("unexpected error: {e}"),
-            Ok(_) => panic!("expected error for unsupported media type"),
-        }
     }
 }

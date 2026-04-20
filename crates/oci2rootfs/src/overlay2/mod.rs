@@ -21,11 +21,12 @@ mod apply;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::convert::SourceImpl;
 use crate::error::{Error, Result};
 use crate::ext4::Ext4Writer;
 
 /// Resolved overlay2 layer chain, ready for ext4 application.
-pub struct Overlay2Archive {
+pub(crate) struct Overlay2Archive {
     /// Layer diff directories ordered bottom-to-top (base layer first).
     layers: Vec<PathBuf>,
 }
@@ -124,14 +125,12 @@ fn collect_lower_layers(
     Ok(())
 }
 
-impl Overlay2Archive {
-    /// Number of layers in the chain.
-    pub fn layer_count(&self) -> usize {
+impl SourceImpl for Overlay2Archive {
+    fn layer_count(&self) -> usize {
         self.layers.len()
     }
 
-    /// Apply all layers (bottom-to-top) to an ext4 writer.
-    pub fn apply_to(&self, writer: &mut Ext4Writer) -> Result<()> {
+    fn apply_to(&self, writer: &mut Ext4Writer) -> Result<()> {
         for (i, diff_dir) in self.layers.iter().enumerate() {
             eprintln!(
                 "Applying overlay2 layer {}/{}: {}",
@@ -170,7 +169,7 @@ mod tests {
         fs::write(layer.join("link"), "AAA").unwrap();
 
         let archive = resolve(&layer).unwrap();
-        assert_eq!(archive.layer_count(), 1);
+        assert_eq!(archive.layers.len(), 1);
         assert_eq!(archive.layers[0], layer.join("diff"));
     }
 
@@ -196,7 +195,7 @@ mod tests {
         fs::write(top.join("lower"), "l/BASE").unwrap();
 
         let archive = resolve(&top).unwrap();
-        assert_eq!(archive.layer_count(), 2);
+        assert_eq!(archive.layers.len(), 2);
         assert_eq!(
             fs::canonicalize(&archive.layers[0]).unwrap(),
             fs::canonicalize(base.join("diff")).unwrap()

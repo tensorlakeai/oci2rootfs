@@ -9,16 +9,18 @@ pub enum Error {
     Ext4Format(#[from] arcbox_ext4::error::FormatError),
 
     #[error("layout error: {0}")]
-    Layout(#[from] containerregistry::layout::Error),
+    Layout(#[from] containerregistry_layout::Error),
 
     #[error("image error: {0}")]
-    Image(#[from] containerregistry::image::Error),
+    Image(#[from] containerregistry_image::Error),
 
+    #[cfg(feature = "remote")]
     #[error("registry error: {0}")]
-    Registry(#[from] containerregistry::registry::Error),
+    Registry(#[from] containerregistry_registry::Error),
 
+    #[cfg(feature = "remote")]
     #[error("authentication error: {0}")]
-    Auth(#[from] containerregistry::auth::Error),
+    Auth(#[from] containerregistry_auth::Error),
 
     #[error("no matching manifest found for platform {0}")]
     NoManifest(String),
@@ -26,6 +28,7 @@ pub enum Error {
     #[error("unsupported media type: {0}")]
     UnsupportedMediaType(String),
 
+    #[cfg(feature = "remote")]
     #[error("invalid reference: {0}")]
     InvalidReference(String),
 
@@ -58,6 +61,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "remote")]
     fn test_invalid_reference_display() {
         let err = Error::InvalidReference("bad ref".into());
         assert_eq!(err.to_string(), "invalid reference: bad ref");

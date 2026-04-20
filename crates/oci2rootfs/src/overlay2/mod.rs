@@ -137,14 +137,6 @@ impl SourceImpl for Overlay2Archive {
         None
     }
 
-    fn estimated_raw_size(&self) -> Option<u64> {
-        let mut total: u64 = 0;
-        for diff in &self.layers {
-            total = total.saturating_add(tree_size(diff).ok()?);
-        }
-        Some(total.saturating_add(16 * 1024 * 1024))
-    }
-
     fn apply_to(&self, writer: &mut Ext4Writer) -> Result<()> {
         for (index, diff_dir) in self.layers.iter().enumerate() {
             let span = tracing::info_span!(
@@ -158,25 +150,6 @@ impl SourceImpl for Overlay2Archive {
         }
         Ok(())
     }
-}
-
-/// Recursively sum sizes of regular files under `root` using
-/// `symlink_metadata().len()` (symlinks and directories contribute nothing).
-fn tree_size(root: &Path) -> std::io::Result<u64> {
-    let mut stack = vec![root.to_path_buf()];
-    let mut total: u64 = 0;
-    while let Some(dir) = stack.pop() {
-        for entry in fs::read_dir(&dir)? {
-            let entry = entry?;
-            let meta = fs::symlink_metadata(entry.path())?;
-            if meta.is_dir() {
-                stack.push(entry.path());
-            } else if meta.is_file() {
-                total = total.saturating_add(meta.len());
-            }
-        }
-    }
-    Ok(total)
 }
 
 #[cfg(test)]

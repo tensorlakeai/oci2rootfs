@@ -12,4 +12,4 @@ repository = "https://github.com/arcbox-labs/oci2rootfs"
 [workspace.dependencies]
 oci2rootfs = { version = "0.1.1", path = "crates/oci2rootfs" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-arcbox-ext4 = "0.1.1"
+arcbox-ext4 = { git = "https://github.com/arcboxlabs/ext4-rs.git", branch = "feat/format-options" }

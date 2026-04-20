@@ -103,12 +103,13 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use crate::ext4::Ext4Writer;
+    use crate::ext4_options::Ext4Options;
 
     const TEST_SIZE: u64 = 16 * 1024 * 1024;
 
     fn create_writer() -> (Ext4Writer, NamedTempFile) {
         let file = NamedTempFile::new().unwrap();
-        let writer = Ext4Writer::create(file.path(), TEST_SIZE).unwrap();
+        let writer = Ext4Writer::create(file.path(), TEST_SIZE, &Ext4Options::default()).unwrap();
         (writer, file)
     }
 

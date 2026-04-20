@@ -7,7 +7,7 @@ use containerregistry_layout::Layout;
 
 use crate::error::Result;
 use crate::ext4::Ext4Writer;
-use crate::ext4_options::{self, Ext4Options};
+use crate::ext4_options::Ext4Options;
 use crate::oci;
 use crate::overlay2::{self, Overlay2Archive};
 
@@ -74,9 +74,8 @@ impl Converter {
 
     /// Set ext4 image metadata overrides (volume label, UUID).
     ///
-    /// Applied to the superblock after the image is fully written. See
-    /// [`Ext4Options`] for the set of adjustable fields and their
-    /// constraints.
+    /// Passed to the formatter at creation time. See [`Ext4Options`] for the
+    /// set of adjustable fields and their constraints.
     pub fn ext4_options(mut self, opts: Ext4Options) -> Self {
         self.ext4_options = opts;
         self
@@ -100,10 +99,9 @@ impl Converter {
 
         let mut guard = PartialOutputGuard::new(&self.output);
 
-        let mut writer = Ext4Writer::create(&self.output, self.size)?;
+        let mut writer = Ext4Writer::create(&self.output, self.size, &self.ext4_options)?;
         source.apply_to(&mut writer)?;
         writer.finish()?;
-        ext4_options::apply(&self.output, &self.ext4_options)?;
 
         guard.disarm();
 

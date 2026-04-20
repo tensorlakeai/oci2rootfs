@@ -1,10 +1,11 @@
 use std::io::Read;
 use std::path::Path;
 
-use arcbox_ext4::Formatter;
 use arcbox_ext4::constants::{file_mode, make_mode};
+use arcbox_ext4::{FormatOptions, Formatter};
 
 use crate::error::Result;
+use crate::ext4_options::Ext4Options;
 use crate::path::join;
 
 /// High-level ext4 image writer that wraps arcbox-ext4's Formatter.
@@ -13,9 +14,20 @@ pub struct Ext4Writer {
 }
 
 impl Ext4Writer {
-    /// Create a new ext4 image file, format it, and prepare for writing.
-    pub fn create(path: impl AsRef<Path>, size: u64) -> Result<Self> {
-        let formatter = Formatter::new(path.as_ref(), 4096, size)?;
+    /// Create a new ext4 image file with caller-supplied superblock overrides.
+    ///
+    /// `opts` surfaces the subset of superblock fields that the bake pipeline
+    /// cares about (UUID, label). Other formatter parameters stay fixed at
+    /// their arcbox-ext4 defaults.
+    pub fn create(path: impl AsRef<Path>, size: u64, opts: &Ext4Options) -> Result<Self> {
+        let mut fmt_opts = FormatOptions::new(size);
+        if let Some(uuid) = opts.uuid {
+            fmt_opts = fmt_opts.uuid(uuid);
+        }
+        if let Some(label) = &opts.label {
+            fmt_opts = fmt_opts.label(label);
+        }
+        let formatter = Formatter::with_options(path.as_ref(), fmt_opts)?;
         Ok(Self { formatter })
     }
 
@@ -168,7 +180,7 @@ mod tests {
 
     fn create_writer() -> (Ext4Writer, NamedTempFile) {
         let file = NamedTempFile::new().unwrap();
-        let writer = Ext4Writer::create(file.path(), TEST_SIZE).unwrap();
+        let writer = Ext4Writer::create(file.path(), TEST_SIZE, &Ext4Options::default()).unwrap();
         (writer, file)
     }
 

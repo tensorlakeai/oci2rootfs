@@ -341,6 +341,8 @@ fn ext4_options_label_and_uuid_written_to_superblock() {
 #[test]
 #[serial]
 fn ext4_options_reject_oversized_label() {
+    use arcbox_ext4::error::FormatError;
+
     let layout = create_oci_layout();
     let output = NamedTempFile::new().unwrap();
 
@@ -349,5 +351,8 @@ fn ext4_options_reject_oversized_label() {
         .ext4_options(Ext4Options::new().label("this-label-is-way-too-long"))
         .convert(OciLayoutSource::open(layout.path()).unwrap());
 
-    assert!(matches!(result, Err(Error::InvalidLabel(_))));
+    assert!(matches!(
+        result,
+        Err(Error::Ext4Format(FormatError::InvalidLabel(_)))
+    ));
 }

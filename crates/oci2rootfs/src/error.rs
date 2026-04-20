@@ -60,11 +60,6 @@ pub enum Error {
     /// any data was written to the ext4 image.
     #[error("invalid tar entry path: {0}")]
     InvalidTarPath(String),
-
-    /// A volume label supplied via [`crate::Ext4Options`] did not fit in the
-    /// superblock's 16-byte `volume_name` field (ext4 hard limit).
-    #[error("invalid ext4 label: {0}")]
-    InvalidLabel(String),
 }
 
 /// Short-hand for [`std::result::Result`] specialized to [`enum@Error`].

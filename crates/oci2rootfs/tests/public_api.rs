@@ -289,32 +289,9 @@ fn image_config_none_for_overlay2() {
 
 #[test]
 #[serial]
-fn preflight_rejects_too_small_image() {
-    let layout = create_oci_layout();
-    let output = NamedTempFile::new().unwrap();
-    // Estimate is always >= 16 MiB metadata overhead; a 1 MiB ceiling must fail.
-    let result = Converter::new(output.path())
-        .size(1024 * 1024)
-        .convert(OciLayoutSource::open(layout.path()).unwrap());
-    match result {
-        Err(Error::InsufficientSize { needed, configured }) => {
-            assert!(needed > configured, "expected needed > configured");
-            assert_eq!(configured, 1024 * 1024);
-        }
-        other => panic!("expected InsufficientSize, got {other:?}"),
-    }
-    // Preflight rejects BEFORE the file would be formatted: the inherited
-    // NamedTempFile creates an empty file at output.path() already, so we
-    // only assert that size is still zero (nothing was written to it).
-    assert_eq!(std::fs::metadata(output.path()).unwrap().len(), 0);
-}
-
-#[test]
-#[serial]
 fn partial_output_cleaned_on_apply_failure() {
     // Corrupt an OCI layout by replacing its gzipped layer blob with
-    // garbage. preflight passes (it only reads manifest sizes), but
-    // `apply_layer` errors once it tries to decompress.
+    // garbage so `apply_layer` errors once it tries to decompress.
     let layout = create_oci_layout();
     let layer_blob = std::fs::read_dir(layout.path().join("blobs").join("sha256"))
         .unwrap()

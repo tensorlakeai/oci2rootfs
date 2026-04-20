@@ -61,17 +61,6 @@ pub enum Error {
     #[error("invalid tar entry path: {0}")]
     InvalidTarPath(String),
 
-    /// The configured output size is smaller than the estimated raw content
-    /// size for the source. The preflight check fires before the output file
-    /// is created, so no partial image is left behind.
-    #[error("output size too small: need at least {needed} bytes, got {configured}")]
-    InsufficientSize {
-        /// Estimated lower bound on the raw bytes needed to fit the image.
-        needed: u64,
-        /// Output size as configured on the [`crate::Converter`].
-        configured: u64,
-    },
-
     /// A volume label supplied via [`crate::Ext4Options`] did not fit in the
     /// superblock's 16-byte `volume_name` field (ext4 hard limit).
     #[error("invalid ext4 label: {0}")]

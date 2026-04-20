@@ -5,7 +5,7 @@ use std::time::Instant;
 use containerregistry_image::ImageConfig;
 use containerregistry_layout::Layout;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::ext4::Ext4Writer;
 use crate::ext4_options::{self, Ext4Options};
 use crate::oci;
@@ -53,7 +53,6 @@ const DEFAULT_SIZE: u64 = 512 * 1024 * 1024;
 pub(crate) trait SourceImpl {
     fn layer_count(&self) -> usize;
     fn config(&self) -> Option<&ImageConfig>;
-    fn estimated_raw_size(&self) -> Option<u64>;
     fn apply_to(&self, writer: &mut Ext4Writer) -> Result<()>;
 }
 
@@ -85,23 +84,12 @@ impl Converter {
 
     /// Convert the provided image source into an ext4 rootfs image.
     ///
-    /// Before touching the output path this checks the source's estimated
-    /// raw size against the configured image size and returns
-    /// [`Error::InsufficientSize`] if the image cannot fit. If the apply
-    /// step fails partway through, any partial output file is removed
-    /// before returning the error.
+    /// If the apply step fails partway through (bad layer, I/O error, out
+    /// of space), any partial output file is removed before returning the
+    /// error.
     pub fn convert(self, source: impl IntoImageSource) -> Result<()> {
         let started = Instant::now();
         let source = source.into_image_source()?;
-
-        if let Some(needed) = source.estimated_raw_size()
-            && needed > self.size
-        {
-            return Err(Error::InsufficientSize {
-                needed,
-                configured: self.size,
-            });
-        }
 
         tracing::info!(
             output = %self.output.display(),
@@ -175,16 +163,6 @@ impl ImageSource {
     /// does not read — `Overlay2Source` therefore returns `None`.
     pub fn config(&self) -> Option<&ImageConfig> {
         self.inner.config()
-    }
-
-    /// Lower-bound estimate of the raw bytes needed to hold the image
-    /// (layer contents + a small ext4 metadata allowance).
-    ///
-    /// Used by [`Converter::convert`] as a preflight check before formatting
-    /// the output. Returns `None` when an estimate can't be computed for
-    /// the source type.
-    pub fn estimated_raw_size(&self) -> Option<u64> {
-        self.inner.estimated_raw_size()
     }
 
     fn apply_to(&self, writer: &mut Ext4Writer) -> Result<()> {

@@ -20,23 +20,6 @@ pub(crate) struct TarImageSource {
     layers: Vec<TarLayer>,
 }
 
-/// Flat ext4 metadata overhead added to raw-content estimates (superblock,
-/// group descriptors, bitmaps, inode tables, indirect/extent blocks).
-const EXT4_METADATA_OVERHEAD: u64 = 16 * 1024 * 1024;
-
-/// Media-type-specific expansion factor applied to compressed blob sizes
-/// when estimating decompressed content.
-fn expansion_factor(media_type: &MediaType) -> f64 {
-    match media_type {
-        MediaType::OciLayerGzip
-        | MediaType::DockerLayerGzip
-        | MediaType::OciLayerNondistributableGzip => 3.0,
-        MediaType::OciLayerZstd | MediaType::OciLayerNondistributableZstd => 4.0,
-        MediaType::OciLayer | MediaType::OciLayerNondistributable => 1.0,
-        _ => 1.0,
-    }
-}
-
 impl TarImageSource {
     /// Build a source whose layer blobs already live in memory.
     #[cfg(feature = "remote")]
@@ -78,17 +61,6 @@ impl SourceImpl for TarImageSource {
 
     fn config(&self) -> Option<&ImageConfig> {
         Some(&self.config)
-    }
-
-    fn estimated_raw_size(&self) -> Option<u64> {
-        let raw: f64 = self
-            .layers
-            .iter()
-            .map(|layer| {
-                layer.descriptor.size as f64 * expansion_factor(&layer.descriptor.media_type)
-            })
-            .sum();
-        Some(raw as u64 + EXT4_METADATA_OVERHEAD)
     }
 
     fn apply_to(&self, writer: &mut Ext4Writer) -> Result<()> {

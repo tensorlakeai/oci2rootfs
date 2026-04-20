@@ -1,3 +1,5 @@
+#![cfg(feature = "remote")]
+
 // End-to-end tests that pull real Docker images from registries, convert
 // them to ext4 rootfs images, and verify the contents.
 //
@@ -10,10 +12,28 @@
 //
 //   cargo test --test e2e_real_image test_alpine -- --ignored --nocapture
 
-use arcbox_ext4::constants::*;
 use arcbox_ext4::Reader;
-use oci2rootfs::{Converter, PullConfig};
+use arcbox_ext4::constants::*;
+use oci2rootfs::{Converter, Platform, RemoteRef};
 use tempfile::NamedTempFile;
+
+async fn convert_remote_image(
+    output: &NamedTempFile,
+    reference: &str,
+    platform: Platform,
+    size: u64,
+) {
+    let source = RemoteRef::new(reference)
+        .platform(platform)
+        .fetch()
+        .await
+        .unwrap();
+
+    Converter::new(output.path())
+        .size(size)
+        .convert(source)
+        .unwrap();
+}
 
 // ---------------------------------------------------------------------------
 // Alpine Linux (tiny, ~3 MiB, single layer)
@@ -23,17 +43,13 @@ use tempfile::NamedTempFile;
 #[ignore]
 async fn test_alpine_amd64() {
     let tmp = NamedTempFile::new().unwrap();
-    let pull_config = PullConfig {
-        arch: "amd64".into(),
-        os: "linux".into(),
-        ..Default::default()
-    };
-
-    Converter::new(tmp.path())
-        .size(128 * 1024 * 1024)
-        .convert_remote("alpine:3.21", &pull_config)
-        .await
-        .expect("failed to convert alpine:3.21");
+    convert_remote_image(
+        &tmp,
+        "alpine:3.21",
+        Platform::new("linux", "amd64"),
+        128 * 1024 * 1024,
+    )
+    .await;
 
     let mut reader = Reader::new(tmp.path()).expect("failed to open ext4 image");
 
@@ -77,13 +93,22 @@ async fn test_alpine_amd64() {
     assert!(reader.exists("/etc/passwd"));
     let passwd = reader.read_file("/etc/passwd", 0, None).unwrap();
     let passwd_str = String::from_utf8_lossy(&passwd);
-    assert!(passwd_str.contains("root:"), "/etc/passwd should have root entry");
+    assert!(
+        passwd_str.contains("root:"),
+        "/etc/passwd should have root entry"
+    );
 
     // -- /bin/busybox (the core binary) --
     assert!(reader.exists("/bin/busybox"));
     let (_, busybox_inode) = reader.stat("/bin/busybox").unwrap();
-    assert!(is_reg(busybox_inode.mode), "/bin/busybox should be a regular file");
-    assert!(busybox_inode.file_size() > 0, "/bin/busybox should not be empty");
+    assert!(
+        is_reg(busybox_inode.mode),
+        "/bin/busybox should be a regular file"
+    );
+    assert!(
+        busybox_inode.file_size() > 0,
+        "/bin/busybox should not be empty"
+    );
 
     // -- /bin/sh is typically a symlink to busybox --
     assert!(reader.exists("/bin/sh"));
@@ -100,10 +125,7 @@ async fn test_alpine_amd64() {
 
     eprintln!("✓ alpine:3.21 amd64 -- all checks passed");
     eprintln!("  /etc has {} entries", etc_entries.len());
-    eprintln!(
-        "  /bin/busybox size: {} bytes",
-        busybox_inode.file_size()
-    );
+    eprintln!("  /bin/busybox size: {} bytes", busybox_inode.file_size());
 }
 
 // ---------------------------------------------------------------------------
@@ -114,17 +136,13 @@ async fn test_alpine_amd64() {
 #[ignore]
 async fn test_alpine_arm64() {
     let tmp = NamedTempFile::new().unwrap();
-    let pull_config = PullConfig {
-        arch: "arm64".into(),
-        os: "linux".into(),
-        ..Default::default()
-    };
-
-    Converter::new(tmp.path())
-        .size(128 * 1024 * 1024)
-        .convert_remote("alpine:3.21", &pull_config)
-        .await
-        .expect("failed to convert alpine:3.21 arm64");
+    convert_remote_image(
+        &tmp,
+        "alpine:3.21",
+        Platform::new("linux", "arm64"),
+        128 * 1024 * 1024,
+    )
+    .await;
 
     let mut reader = Reader::new(tmp.path()).expect("failed to open ext4 image");
     assert!(reader.exists("/bin/busybox"));
@@ -144,17 +162,13 @@ async fn test_alpine_arm64() {
 #[ignore]
 async fn test_ubuntu_2204_amd64() {
     let tmp = NamedTempFile::new().unwrap();
-    let pull_config = PullConfig {
-        arch: "amd64".into(),
-        os: "linux".into(),
-        ..Default::default()
-    };
-
-    Converter::new(tmp.path())
-        .size(256 * 1024 * 1024)
-        .convert_remote("ubuntu:22.04", &pull_config)
-        .await
-        .expect("failed to convert ubuntu:22.04");
+    convert_remote_image(
+        &tmp,
+        "ubuntu:22.04",
+        Platform::new("linux", "amd64"),
+        256 * 1024 * 1024,
+    )
+    .await;
 
     let mut reader = Reader::new(tmp.path()).expect("failed to open ext4 image");
 
@@ -192,15 +206,12 @@ async fn test_ubuntu_2204_amd64() {
     assert!(passwd_str.contains("nobody:"));
 
     // -- /etc/apt/sources.list or sources.list.d (Ubuntu has apt) --
-    let has_apt = reader.exists("/etc/apt/sources.list")
-        || reader.exists("/etc/apt/sources.list.d");
+    let has_apt =
+        reader.exists("/etc/apt/sources.list") || reader.exists("/etc/apt/sources.list.d");
     assert!(has_apt, "Ubuntu should have apt sources configuration");
 
     // -- /usr/bin/dpkg (package manager) --
-    assert!(
-        reader.exists("/usr/bin/dpkg"),
-        "Ubuntu should have dpkg"
-    );
+    assert!(reader.exists("/usr/bin/dpkg"), "Ubuntu should have dpkg");
     let (_, dpkg_inode) = reader.stat("/usr/bin/dpkg").unwrap();
     assert!(dpkg_inode.file_size() > 0);
 
@@ -229,10 +240,7 @@ async fn test_ubuntu_2204_amd64() {
     eprintln!("✓ ubuntu:22.04 amd64 -- all checks passed");
     eprintln!("  /etc has {} entries", etc_entries.len());
     eprintln!("  /usr/bin has {} entries", usr_bin_entries.len());
-    eprintln!(
-        "  /usr/bin/dpkg size: {} bytes",
-        dpkg_inode.file_size()
-    );
+    eprintln!("  /usr/bin/dpkg size: {} bytes", dpkg_inode.file_size());
 }
 
 // ---------------------------------------------------------------------------
@@ -243,13 +251,13 @@ async fn test_ubuntu_2204_amd64() {
 #[ignore]
 async fn test_debian_bookworm_slim() {
     let tmp = NamedTempFile::new().unwrap();
-    let pull_config = PullConfig::default(); // amd64
-
-    Converter::new(tmp.path())
-        .size(256 * 1024 * 1024)
-        .convert_remote("debian:bookworm-slim", &pull_config)
-        .await
-        .expect("failed to convert debian:bookworm-slim");
+    convert_remote_image(
+        &tmp,
+        "debian:bookworm-slim",
+        Platform::default(),
+        256 * 1024 * 1024,
+    )
+    .await;
 
     let mut reader = Reader::new(tmp.path()).expect("failed to open ext4 image");
 
@@ -275,13 +283,13 @@ async fn test_debian_bookworm_slim() {
 #[ignore]
 async fn test_busybox() {
     let tmp = NamedTempFile::new().unwrap();
-    let pull_config = PullConfig::default();
-
-    Converter::new(tmp.path())
-        .size(64 * 1024 * 1024)
-        .convert_remote("busybox:latest", &pull_config)
-        .await
-        .expect("failed to convert busybox:latest");
+    convert_remote_image(
+        &tmp,
+        "busybox:latest",
+        Platform::default(),
+        64 * 1024 * 1024,
+    )
+    .await;
 
     let mut reader = Reader::new(tmp.path()).expect("failed to open ext4 image");
 

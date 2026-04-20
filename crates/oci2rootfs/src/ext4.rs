@@ -1,8 +1,8 @@
 use std::io::Read;
 use std::path::Path;
 
-use arcbox_ext4::constants::{file_mode, make_mode};
 use arcbox_ext4::Formatter;
+use arcbox_ext4::constants::{file_mode, make_mode};
 
 use crate::error::Result;
 
@@ -22,8 +22,16 @@ impl Ext4Writer {
     pub fn mkdir_p(&mut self, path: &str, mode: u32) -> Result<()> {
         let perm = (mode & 0o7777) as u16;
         if !self.formatter.is_dir(path) {
-            self.formatter
-                .create(path, make_mode(file_mode::S_IFDIR, perm), None, None, None, None, None, None)?;
+            self.formatter.create(
+                path,
+                make_mode(file_mode::S_IFDIR, perm),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )?;
         } else {
             // Directory already exists -- update permissions.
             self.formatter.set_permissions(path, perm)?;
@@ -112,13 +120,6 @@ impl Ext4Writer {
         Ok(self.formatter.list_dir(path))
     }
 
-    /// Set permissions on a path.
-    pub fn set_permissions(&mut self, path: &str, mode: u32) -> Result<()> {
-        let perm = (mode & 0o7777) as u16;
-        self.formatter.set_permissions(path, perm)?;
-        Ok(())
-    }
-
     /// Set ownership on a path.
     pub fn set_owner(&mut self, path: &str, uid: u32, gid: u32) -> Result<()> {
         self.formatter.set_owner(path, uid, gid)?;
@@ -142,3 +143,150 @@ impl Ext4Writer {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+    use std::io::Cursor;
+    use tempfile::NamedTempFile;
+
+    const TEST_SIZE: u64 = 16 * 1024 * 1024;
+
+    fn create_writer() -> (Ext4Writer, NamedTempFile) {
+        let file = NamedTempFile::new().unwrap();
+        let writer = Ext4Writer::create(file.path(), TEST_SIZE).unwrap();
+        (writer, file)
+    }
+
+    #[test]
+    #[serial]
+    fn create_and_finish() {
+        let (writer, file) = create_writer();
+        writer.finish().unwrap();
+        let metadata = std::fs::metadata(file.path()).unwrap();
+        assert_eq!(metadata.len(), TEST_SIZE);
+    }
+
+    #[test]
+    #[serial]
+    fn mkdir_and_exists() {
+        let (mut writer, _file) = create_writer();
+        writer.mkdir_p("/testdir", 0o755).unwrap();
+        assert!(writer.exists("/testdir"));
+        assert!(writer.is_dir("/testdir"));
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn mkdir_idempotent() {
+        let (mut writer, _file) = create_writer();
+        writer.mkdir_p("/testdir", 0o755).unwrap();
+        writer.mkdir_p("/testdir", 0o700).unwrap();
+        assert!(writer.is_dir("/testdir"));
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn write_file() {
+        let (mut writer, _file) = create_writer();
+        writer
+            .write_file("/hello.txt", &mut Cursor::new(b"hello world"), 0o644, 0, 0)
+            .unwrap();
+        assert!(writer.exists("/hello.txt"));
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn write_file_overwrite() {
+        let (mut writer, _file) = create_writer();
+        writer
+            .write_file("/file.txt", &mut Cursor::new(b"first"), 0o644, 0, 0)
+            .unwrap();
+        writer
+            .write_file("/file.txt", &mut Cursor::new(b"second"), 0o644, 0, 0)
+            .unwrap();
+        assert!(writer.exists("/file.txt"));
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn symlink() {
+        let (mut writer, _file) = create_writer();
+        writer
+            .write_file("/target.txt", &mut Cursor::new(b"data"), 0o644, 0, 0)
+            .unwrap();
+        writer.symlink("/target.txt", "/link.txt").unwrap();
+        assert!(writer.exists("/link.txt"));
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn link() {
+        let (mut writer, _file) = create_writer();
+        writer
+            .write_file("/original.txt", &mut Cursor::new(b"data"), 0o644, 0, 0)
+            .unwrap();
+        writer.link("/original.txt", "/hardlink.txt").unwrap();
+        assert!(writer.exists("/hardlink.txt"));
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn remove() {
+        let (mut writer, _file) = create_writer();
+        writer
+            .write_file("/removeme.txt", &mut Cursor::new(b"data"), 0o644, 0, 0)
+            .unwrap();
+        assert!(writer.exists("/removeme.txt"));
+        writer.remove("/removeme.txt").unwrap();
+        assert!(!writer.exists("/removeme.txt"));
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn rmdir() {
+        let (mut writer, _file) = create_writer();
+        writer.mkdir_p("/emptydir", 0o755).unwrap();
+        assert!(writer.is_dir("/emptydir"));
+        writer.rmdir("/emptydir").unwrap();
+        assert!(!writer.is_dir("/emptydir"));
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn list_dir() {
+        let (mut writer, _file) = create_writer();
+        writer.mkdir_p("/parent", 0o755).unwrap();
+        writer
+            .write_file("/parent/a.txt", &mut Cursor::new(b"a"), 0o644, 0, 0)
+            .unwrap();
+        writer
+            .write_file("/parent/b.txt", &mut Cursor::new(b"b"), 0o644, 0, 0)
+            .unwrap();
+        writer.mkdir_p("/parent/subdir", 0o755).unwrap();
+
+        let mut entries = writer.list_dir("/parent").unwrap();
+        entries.sort();
+        assert_eq!(entries, vec!["a.txt", "b.txt", "subdir"]);
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn set_owner() {
+        let (mut writer, _file) = create_writer();
+        writer
+            .write_file("/perm.txt", &mut Cursor::new(b"data"), 0o644, 0, 0)
+            .unwrap();
+        writer.set_owner("/perm.txt", 1000, 1000).unwrap();
+        writer.finish().unwrap();
+    }
+}

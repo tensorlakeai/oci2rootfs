@@ -1,19 +1,53 @@
 use std::path::{Path, PathBuf};
 
+use containerregistry_layout::Layout;
+
 use crate::error::Result;
 use crate::ext4::Ext4Writer;
-use crate::layer::apply_layer;
 use crate::oci;
-use crate::overlay2;
-use crate::pull::{self, PullConfig};
-
-/// Default image size: 512 MiB.
-const DEFAULT_SIZE: u64 = 512 * 1024 * 1024;
+use crate::overlay2::{self, Overlay2Archive};
 
 /// Converts container images to ext4 rootfs images.
 pub struct Converter {
     output: PathBuf,
     size: u64,
+}
+
+/// A resolved image source ready to be applied to an ext4 writer.
+pub struct ImageSource {
+    inner: Box<dyn SourceImpl>,
+}
+
+/// Converts a builder or already-resolved source into an [`ImageSource`].
+pub trait IntoImageSource {
+    /// Resolve this value into the concrete image source used by [`Converter`].
+    fn into_image_source(self) -> Result<ImageSource>;
+}
+
+/// Target platform used when resolving manifest lists and image indexes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Platform {
+    os: String,
+    arch: String,
+}
+
+/// Builder for an OCI image layout source on disk.
+pub struct OciLayoutSource {
+    layout: Layout,
+    platform: Platform,
+}
+
+/// Builder for a Docker overlay2 layer chain on disk.
+pub struct Overlay2Source {
+    archive: Overlay2Archive,
+}
+
+/// Default image size: 512 MiB.
+const DEFAULT_SIZE: u64 = 512 * 1024 * 1024;
+
+pub(crate) trait SourceImpl {
+    fn layer_count(&self) -> usize;
+    fn apply_to(&self, writer: &mut Ext4Writer) -> Result<()>;
 }
 
 impl Converter {
@@ -31,66 +65,123 @@ impl Converter {
         self
     }
 
-    /// Convert from a local image source.
-    ///
-    /// Auto-detects the format:
-    /// - Docker overlay2 layer directory (`diff/` + `link`)
-    /// - OCI Image Layout (`oci-layout` + `index.json`)
-    pub fn convert_local(self, source: impl AsRef<Path>) -> Result<()> {
-        let source = source.as_ref();
-
-        if overlay2::is_overlay2(source) {
-            let archive = overlay2::resolve(source)?;
-            eprintln!(
-                "Resolved overlay2 image with {} layers",
-                archive.layer_count()
-            );
-            let mut writer = Ext4Writer::create(&self.output, self.size)?;
-            archive.apply_to(&mut writer)?;
-            writer.finish()?;
-        } else {
-            let image = oci::resolve(source)?;
-            eprintln!("Resolved OCI image with {} layers", image.layers.len());
-            let mut writer = Ext4Writer::create(&self.output, self.size)?;
-            for (i, layer) in image.layers.iter().enumerate() {
-                eprintln!(
-                    "Applying layer {}/{}: {}",
-                    i + 1,
-                    image.layers.len(),
-                    layer.digest
-                );
-                let reader = image.open_layer(layer)?;
-                apply_layer(reader, &mut writer)?;
-            }
-            writer.finish()?;
-        }
-
-        eprintln!("Created rootfs: {}", self.output.display());
-        Ok(())
-    }
-
-    /// Convert from a remote registry reference.
-    pub async fn convert_remote(self, reference: &str, pull_config: &PullConfig) -> Result<()> {
-        let image = pull::pull(reference, pull_config).await?;
-
-        eprintln!("Pulled image with {} layers", image.layer_count());
-
+    /// Convert the provided image source into an ext4 rootfs image.
+    pub fn convert(self, source: impl IntoImageSource) -> Result<()> {
+        let source = source.into_image_source()?;
         let mut writer = Ext4Writer::create(&self.output, self.size)?;
-
-        for (i, desc) in image.layer_descriptors().iter().enumerate() {
-            eprintln!(
-                "Applying layer {}/{}: {}",
-                i + 1,
-                image.layer_count(),
-                desc.digest
-            );
-            let reader = image.open_layer(i)?;
-            apply_layer(reader, &mut writer)?;
-        }
-
+        source.apply_to(&mut writer)?;
         writer.finish()?;
         eprintln!("Created rootfs: {}", self.output.display());
         Ok(())
+    }
+}
+
+impl ImageSource {
+    pub(crate) fn new(inner: impl SourceImpl + 'static) -> Self {
+        Self {
+            inner: Box::new(inner),
+        }
+    }
+
+    /// Returns the number of layers that will be applied.
+    pub fn layer_count(&self) -> usize {
+        self.inner.layer_count()
+    }
+
+    fn apply_to(&self, writer: &mut Ext4Writer) -> Result<()> {
+        self.inner.apply_to(writer)
+    }
+}
+
+impl IntoImageSource for ImageSource {
+    fn into_image_source(self) -> Result<ImageSource> {
+        Ok(self)
+    }
+}
+
+impl Default for Platform {
+    fn default() -> Self {
+        Self::new("linux", "amd64")
+    }
+}
+
+impl Platform {
+    /// Create a platform selector from an operating system and architecture.
+    pub fn new(os: impl Into<String>, arch: impl Into<String>) -> Self {
+        Self {
+            os: os.into(),
+            arch: arch.into(),
+        }
+    }
+
+    /// Returns the operating system component.
+    pub fn os(&self) -> &str {
+        &self.os
+    }
+
+    /// Returns the architecture component.
+    pub fn arch(&self) -> &str {
+        &self.arch
+    }
+}
+
+impl OciLayoutSource {
+    /// Open an OCI image layout directory on disk.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let layout = Layout::open(path)?;
+        Ok(Self {
+            layout,
+            platform: Platform::default(),
+        })
+    }
+
+    /// Override the platform used when resolving the layout's manifest.
+    pub fn platform(mut self, platform: Platform) -> Self {
+        self.platform = platform;
+        self
+    }
+}
+
+impl IntoImageSource for OciLayoutSource {
+    fn into_image_source(self) -> Result<ImageSource> {
+        Ok(ImageSource::new(oci::resolve(self.layout, &self.platform)?))
+    }
+}
+
+impl Overlay2Source {
+    /// Open and resolve a Docker overlay2 chain-id directory.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Ok(Self {
+            archive: overlay2::resolve(path.as_ref())?,
+        })
+    }
+
+    /// Returns whether the path looks like a Docker overlay2 layer directory.
+    pub fn matches(path: &Path) -> bool {
+        overlay2::is_overlay2(path)
+    }
+}
+
+impl IntoImageSource for Overlay2Source {
+    fn into_image_source(self) -> Result<ImageSource> {
+        Ok(ImageSource::new(self.archive))
+    }
+}
+
+/// Auto-detect a local image source from an on-disk path.
+///
+/// Docker overlay2 layer directories are detected by their `diff/` and `link`
+/// markers. All other paths are treated as OCI image layouts and resolved
+/// with the provided platform selector.
+pub fn autodetect(path: impl AsRef<Path>, platform: Platform) -> Result<ImageSource> {
+    let path = path.as_ref();
+
+    if Overlay2Source::matches(path) {
+        Overlay2Source::open(path)?.into_image_source()
+    } else {
+        OciLayoutSource::open(path)?
+            .platform(platform)
+            .into_image_source()
     }
 }
 
@@ -115,5 +206,12 @@ mod tests {
     fn test_converter_output_path() {
         let c = Converter::new("/tmp/output.ext4");
         assert_eq!(c.output, PathBuf::from("/tmp/output.ext4"));
+    }
+
+    #[test]
+    fn test_platform_default() {
+        let platform = Platform::default();
+        assert_eq!(platform.os(), "linux");
+        assert_eq!(platform.arch(), "amd64");
     }
 }

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use oci2rootfs::{Converter, PullConfig};
+use oci2rootfs::{Converter, Platform, RemoteRef, autodetect};
 
 #[derive(Parser)]
 #[command(
@@ -50,10 +50,10 @@ fn parse_size(s: &str) -> std::result::Result<u64, String> {
     }
 }
 
-fn parse_platform(s: &str) -> std::result::Result<(String, String), String> {
+fn parse_platform(s: &str) -> std::result::Result<Platform, String> {
     let parts: Vec<&str> = s.split('/').collect();
     match parts.as_slice() {
-        [os, arch] => Ok((os.to_string(), arch.to_string())),
+        [os, arch] => Ok(Platform::new(*os, *arch)),
         _ => Err(format!("invalid platform format: {s}, expected os/arch")),
     }
 }
@@ -61,29 +61,24 @@ fn parse_platform(s: &str) -> std::result::Result<(String, String), String> {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+    let platform = parse_platform(&cli.platform).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
 
     let converter = Converter::new(&cli.output).size(cli.size);
 
     let result = if std::path::Path::new(&cli.source).exists() {
-        // Local directory (OCI layout or overlay2)
         eprintln!("Source: local directory at {}", cli.source);
-        converter.convert_local(&cli.source)
+        autodetect(&cli.source, platform).and_then(|source| converter.convert(source))
     } else {
-        // Remote registry reference
         eprintln!("Source: remote registry {}", cli.source);
-
-        let (os, arch) = parse_platform(&cli.platform).unwrap_or_else(|e| {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        });
-
-        let pull_config = PullConfig {
-            insecure: cli.insecure,
-            arch,
-            os,
-        };
-
-        converter.convert_remote(&cli.source, &pull_config).await
+        let source = RemoteRef::new(&cli.source)
+            .platform(platform)
+            .insecure(cli.insecure)
+            .fetch()
+            .await;
+        source.and_then(|source| converter.convert(source))
     };
 
     if let Err(e) = result {
@@ -132,7 +127,7 @@ mod tests {
     fn test_parse_platform_valid() {
         assert_eq!(
             parse_platform("linux/amd64").unwrap(),
-            ("linux".to_string(), "amd64".to_string())
+            Platform::new("linux", "amd64")
         );
     }
 
@@ -140,7 +135,7 @@ mod tests {
     fn test_parse_platform_arm() {
         assert_eq!(
             parse_platform("linux/arm64").unwrap(),
-            ("linux".to_string(), "arm64".to_string())
+            Platform::new("linux", "arm64")
         );
     }
 

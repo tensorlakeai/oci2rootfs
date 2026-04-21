@@ -102,7 +102,7 @@ impl TarLayer {
     }
 }
 
-trait BlobOpener {
+trait BlobOpener: Send {
     fn open_blob(&self) -> Result<Box<dyn Read>>;
 }
 

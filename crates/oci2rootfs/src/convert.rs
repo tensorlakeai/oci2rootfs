@@ -19,6 +19,9 @@ pub struct Converter {
 }
 
 /// A resolved image source ready to be applied to an ext4 writer.
+///
+/// The source is [`Send`], so callers can resolve it on an async runtime and
+/// then move it into a blocking worker thread for [`Converter::convert`].
 pub struct ImageSource {
     inner: Box<dyn SourceImpl>,
 }
@@ -50,7 +53,7 @@ pub struct Overlay2Source {
 /// Default image size: 512 MiB.
 const DEFAULT_SIZE: u64 = 512 * 1024 * 1024;
 
-pub(crate) trait SourceImpl {
+pub(crate) trait SourceImpl: Send {
     fn layer_count(&self) -> usize;
     fn config(&self) -> Option<&ImageConfig>;
     fn apply_to(&self, writer: &mut Ext4Writer) -> Result<()>;

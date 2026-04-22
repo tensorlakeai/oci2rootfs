@@ -55,9 +55,10 @@ pub enum Error {
     #[error("unsupported format: {0}")]
     UnsupportedFormat(String),
 
-    /// A tar entry's path, symlink target, or hardlink target contained a
-    /// parent-dir (`..`) component or a NUL byte, and was rejected before
-    /// any data was written to the ext4 image.
+    /// A tar entry path or hardlink target contained a parent-dir (`..`)
+    /// component or a NUL byte, or a symlink target contained a NUL byte
+    /// or non-UTF-8 bytes. Rejected before any data is written to the
+    /// ext4 image.
     #[error("invalid tar entry path: {0}")]
     InvalidTarPath(String),
 }

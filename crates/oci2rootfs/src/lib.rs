@@ -64,10 +64,13 @@
 //!
 //! # Security
 //!
-//! - Tar entry paths, symlink targets, and hardlink targets are validated
-//!   via [`std::path::Path::components`]: parent-dir (`..`) components and
-//!   NUL bytes are rejected as [`Error::InvalidTarPath`]. Malicious layers
-//!   fail loudly rather than landing with collapsed paths.
+//! - Tar entry paths and hardlink targets are validated via
+//!   [`std::path::Path::components`]: parent-dir (`..`) components and
+//!   NUL bytes are rejected as [`Error::InvalidTarPath`]. Symlink targets
+//!   are stored verbatim (only NUL bytes and non-UTF-8 are rejected):
+//!   relative `..` targets like `/usr/sbin/foo -> ../bin/foo` are
+//!   legitimate in real images and are resolved by the kernel against the
+//!   consumer's mount point, not the host.
 //! - Overlay2 `lower` references that canonicalize outside the overlay2
 //!   root directory are rejected.
 //! - Remote blob fetches verify SHA-256 digests against the manifest

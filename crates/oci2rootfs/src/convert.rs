@@ -101,9 +101,9 @@ impl Converter {
             "creating ext4 image"
         );
 
+        let mut writer = Ext4Writer::create(&self.output, self.size, &self.ext4_options)?;
         let mut guard = PartialOutputGuard::new(&self.output);
 
-        let mut writer = Ext4Writer::create(&self.output, self.size, &self.ext4_options)?;
         source.apply_to(&mut writer)?;
         writer.finish()?;
 

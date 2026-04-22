@@ -112,7 +112,7 @@ pull stack when you only need OCI layout and Docker overlay2 support:
 
 ```toml
 [dependencies]
-oci2rootfs = { version = "0.1", default-features = false }
+oci2rootfs = { version = "0.2", default-features = false }
 ```
 
 ### Known limitations
@@ -145,7 +145,7 @@ crates/
 │       ├── ext4.rs      # ext4 image writer (arcbox-ext4)
 │       ├── layer.rs     # Tar layer application with whiteout support
 │       ├── oci.rs       # OCI Image Layout resolution
-│       ├── ext4_options.rs # Post-format UUID/label superblock rewrite
+│       ├── ext4_options.rs # UUID/label passed at format time
 │       ├── overlay2/    # Docker overlay2 resolution and apply
 │       ├── path.rs      # Shared path sanitation + whiteout parsing
 │       ├── pull.rs      # Remote registry pull (feature = "remote")

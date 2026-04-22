@@ -3,13 +3,13 @@ members = ["crates/oci2rootfs", "crates/oci2rootfs-cli"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 authors = ["ArcBox Labs <oss@arcbox.dev>", "AprilNEA <dev@aprilnea.me>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/arcbox-labs/oci2rootfs"
 
 [workspace.dependencies]
-oci2rootfs = { version = "0.1.1", path = "crates/oci2rootfs" }
+oci2rootfs = { version = "0.2.0", path = "crates/oci2rootfs" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 arcbox-ext4 = "0.1.2"

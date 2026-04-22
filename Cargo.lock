@@ -991,7 +991,7 @@ dependencies = [
 
 [[package]]
 name = "oci2rootfs"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "arcbox-ext4",
  "containerregistry-auth",
@@ -1012,7 +1012,7 @@ dependencies = [
 
 [[package]]
 name = "oci2rootfs-cli"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "clap",
  "oci2rootfs",

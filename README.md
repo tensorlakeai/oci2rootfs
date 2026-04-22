@@ -69,6 +69,14 @@ let source = RemoteRef::new("nginx:latest")
     .fetch()
     .await?;
 
+// Remote fetches also expose the resolved manifest digest.
+println!(
+    "manifest: {}",
+    source
+        .manifest_digest()
+        .expect("remote sources always resolve to a manifest")
+);
+
 // Image config (entrypoint/cmd/env/...) is available on the source.
 if let Some(cfg) = source.config() {
     if let Some(container) = &cfg.config {
@@ -91,6 +99,7 @@ Converter::new("rootfs.ext4").convert(source)?;
 | Volume label     | empty                                  | `Ext4Options::label` / `--label` |
 | UUID             | random v4                              | `Ext4Options::uuid` / `--uuid` |
 | `ImageConfig`    | exposed via `ImageSource::config()` for OCI layout and remote pulls; `None` for overlay2 sources (Docker keeps the config outside the layer tree) | — |
+| Manifest digest  | exposed via `ImageSource::manifest_digest()` for OCI layout and remote pulls; `None` for overlay2 sources | — |
 
 ### Feature flags
 

@@ -96,7 +96,9 @@ mod path;
 mod pull;
 mod tar_source;
 
-pub use containerregistry_image::{ContainerConfig, Healthcheck, History, ImageConfig, RootFs};
+pub use containerregistry_image::{
+    ContainerConfig, Digest, Healthcheck, History, ImageConfig, RootFs,
+};
 pub use convert::{
     Converter, ImageSource, IntoImageSource, OciLayoutSource, Overlay2Source, Platform, autodetect,
 };

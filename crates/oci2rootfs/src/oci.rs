@@ -1,4 +1,4 @@
-use containerregistry_image::{Descriptor, ImageIndex};
+use containerregistry_image::{Descriptor, Digest, ImageIndex};
 use containerregistry_layout::Layout;
 
 use crate::convert::Platform;
@@ -6,7 +6,7 @@ use crate::error::{Error, Result};
 use crate::tar_source::TarImageSource;
 
 /// Resolve an OCI image layout into a tar-layer-backed image source.
-pub(crate) fn resolve(layout: Layout, platform: &Platform) -> Result<TarImageSource> {
+pub(crate) fn resolve(layout: Layout, platform: &Platform) -> Result<(TarImageSource, Digest)> {
     let index = layout.index()?;
 
     let manifest_desc = find_manifest_descriptor(&layout, &index, platform)?;
@@ -21,11 +21,15 @@ pub(crate) fn resolve(layout: Layout, platform: &Platform) -> Result<TarImageSou
     tracing::info!(
         os = platform.os(),
         arch = platform.arch(),
+        manifest_digest = %manifest_desc.digest,
         layer_count = layers.len(),
         "resolved OCI image layout"
     );
 
-    Ok(TarImageSource::from_files(config, layers))
+    Ok((
+        TarImageSource::from_files(config, layers),
+        manifest_desc.digest,
+    ))
 }
 
 /// Find the best manifest descriptor from an image index.
@@ -224,7 +228,7 @@ mod tests {
     fn resolve_single_manifest() {
         let dir = create_single_manifest_layout();
         let layout = Layout::open(dir.path()).unwrap();
-        let image = resolve(layout, &Platform::default()).unwrap();
+        let (image, _) = resolve(layout, &Platform::default()).unwrap();
 
         assert_eq!(image.layer_count(), 1);
         assert_eq!(image.config().architecture, "amd64");
@@ -235,7 +239,7 @@ mod tests {
     fn resolve_platform_override() {
         let dir = create_multi_platform_layout();
         let layout = Layout::open(dir.path()).unwrap();
-        let image = resolve(layout, &Platform::new("linux", "arm64")).unwrap();
+        let (image, _) = resolve(layout, &Platform::new("linux", "arm64")).unwrap();
 
         assert_eq!(image.config().architecture, "arm64");
     }

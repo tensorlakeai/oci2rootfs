@@ -3,7 +3,7 @@ use crate::error::{Error, Result};
 use crate::tar_source::TarImageSource;
 
 use containerregistry_auth::AuthResolver;
-use containerregistry_image::ImageIndex;
+use containerregistry_image::{Digest, ImageIndex};
 use containerregistry_registry::{Client, ClientConfig, ManifestOrIndex, Reference};
 
 /// Builder for a remote registry reference that will be fetched into memory.
@@ -37,14 +37,21 @@ impl RemoteRef {
 
     /// Fetch the remote image and materialize it into an in-memory [`ImageSource`].
     pub async fn fetch(self) -> Result<ImageSource> {
-        Ok(ImageSource::new(
-            pull(&self.reference, self.insecure, &self.platform).await?,
+        let (source, manifest_digest) =
+            pull(&self.reference, self.insecure, &self.platform).await?;
+        Ok(ImageSource::with_manifest_digest(
+            source,
+            Some(manifest_digest),
         ))
     }
 }
 
 /// Pull an image from a remote registry and materialize its layers in memory.
-async fn pull(reference_str: &str, insecure: bool, platform: &Platform) -> Result<TarImageSource> {
+async fn pull(
+    reference_str: &str,
+    insecure: bool,
+    platform: &Platform,
+) -> Result<(TarImageSource, Digest)> {
     let reference: Reference = reference_str
         .parse()
         .map_err(|e: containerregistry_registry::Error| Error::InvalidReference(e.to_string()))?;
@@ -64,9 +71,9 @@ async fn pull(reference_str: &str, insecure: bool, platform: &Platform) -> Resul
         .with_insecure(insecure);
     let client = Client::with_credential(client_config, credential)?;
 
-    let (manifest_or_index, _digest) = client.get_manifest(&reference).await?;
-    let manifest = match manifest_or_index {
-        ManifestOrIndex::Manifest(manifest) => *manifest,
+    let (manifest_or_index, digest) = client.get_manifest(&reference).await?;
+    let (manifest, manifest_digest) = match manifest_or_index {
+        ManifestOrIndex::Manifest(manifest) => (*manifest, digest),
         ManifestOrIndex::Index(index) => {
             resolve_platform_manifest(&client, &reference, &index, platform).await?
         }
@@ -75,6 +82,7 @@ async fn pull(reference_str: &str, insecure: bool, platform: &Platform) -> Resul
     tracing::info!(
         os = platform.os(),
         arch = platform.arch(),
+        manifest_digest = %manifest_digest,
         layer_count = manifest.layers().len(),
         "resolved remote manifest"
     );
@@ -98,7 +106,7 @@ async fn pull(reference_str: &str, insecure: bool, platform: &Platform) -> Resul
         layers.push((layer_desc.clone(), blob));
     }
 
-    Ok(TarImageSource::from_memory(config, layers))
+    Ok((TarImageSource::from_memory(config, layers), manifest_digest))
 }
 
 /// Resolve a platform-specific manifest from a multi-platform image index.
@@ -107,7 +115,7 @@ async fn resolve_platform_manifest(
     reference: &Reference,
     index: &ImageIndex,
     platform: &Platform,
-) -> Result<containerregistry_image::Manifest> {
+) -> Result<(containerregistry_image::Manifest, Digest)> {
     let desc = index
         .find_platform(platform.arch(), platform.os(), None)
         .ok_or_else(|| Error::NoManifest(format!("{}/{}", platform.os(), platform.arch())))?;
@@ -118,10 +126,10 @@ async fn resolve_platform_manifest(
         desc.digest.clone(),
     );
 
-    let (manifest_or_index, _) = client.get_manifest(&manifest_ref).await?;
+    let (manifest_or_index, manifest_digest) = client.get_manifest(&manifest_ref).await?;
 
     match manifest_or_index {
-        ManifestOrIndex::Manifest(manifest) => Ok(*manifest),
+        ManifestOrIndex::Manifest(manifest) => Ok((*manifest, manifest_digest)),
         ManifestOrIndex::Index(_) => Err(Error::UnsupportedMediaType(
             "nested image index not supported".into(),
         )),

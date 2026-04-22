@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use containerregistry_image::ImageConfig;
+use containerregistry_image::{Digest, ImageConfig};
 use containerregistry_layout::Layout;
 
 use crate::error::Result;
@@ -24,6 +24,7 @@ pub struct Converter {
 /// then move it into a blocking worker thread for [`Converter::convert`].
 pub struct ImageSource {
     inner: Box<dyn SourceImpl>,
+    manifest_digest: Option<Digest>,
 }
 
 /// Converts a builder or already-resolved source into an [`ImageSource`].
@@ -145,8 +146,16 @@ impl Drop for PartialOutputGuard<'_> {
 
 impl ImageSource {
     pub(crate) fn new(inner: impl SourceImpl + 'static) -> Self {
+        Self::with_manifest_digest(inner, None)
+    }
+
+    pub(crate) fn with_manifest_digest(
+        inner: impl SourceImpl + 'static,
+        manifest_digest: Option<Digest>,
+    ) -> Self {
         Self {
             inner: Box::new(inner),
+            manifest_digest,
         }
     }
 
@@ -164,6 +173,17 @@ impl ImageSource {
     /// does not read — `Overlay2Source` therefore returns `None`.
     pub fn config(&self) -> Option<&ImageConfig> {
         self.inner.config()
+    }
+
+    /// Returns the resolved OCI manifest digest when the source maps to a
+    /// concrete manifest.
+    ///
+    /// `OciLayoutSource` and `RemoteRef::fetch` resolve a manifest and return
+    /// `Some`, including the platform-specific manifest chosen from an image
+    /// index. Docker overlay2 sources are filesystem snapshots, not OCI
+    /// descriptors, so they return `None`.
+    pub fn manifest_digest(&self) -> Option<&Digest> {
+        self.manifest_digest.as_ref()
     }
 
     fn apply_to(&self, writer: &mut Ext4Writer) -> Result<()> {
@@ -222,7 +242,11 @@ impl OciLayoutSource {
 
 impl IntoImageSource for OciLayoutSource {
     fn into_image_source(self) -> Result<ImageSource> {
-        Ok(ImageSource::new(oci::resolve(self.layout, &self.platform)?))
+        let (source, manifest_digest) = oci::resolve(self.layout, &self.platform)?;
+        Ok(ImageSource::with_manifest_digest(
+            source,
+            Some(manifest_digest),
+        ))
     }
 }
 

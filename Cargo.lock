@@ -189,9 +189,8 @@ checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 
 [[package]]
 name = "containerregistry-auth"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4f21aecc3534a2dbaf9a7c85e233eaaabe1418df34ac58afc04c65ee5ef2a0b"
+version = "0.1.2"
+source = "git+https://github.com/arcbox-labs/containerregistry-rs.git?rev=3acd38a671e50b0dbe22bef134b9974f0de4b431#3acd38a671e50b0dbe22bef134b9974f0de4b431"
 dependencies = [
  "base64",
  "serde",
@@ -201,9 +200,8 @@ dependencies = [
 
 [[package]]
 name = "containerregistry-image"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cac2e863640a635c9718cfcba6d131e0b172576e421dc0fc7443262f4e8016b0"
+version = "0.1.2"
+source = "git+https://github.com/arcbox-labs/containerregistry-rs.git?rev=3acd38a671e50b0dbe22bef134b9974f0de4b431#3acd38a671e50b0dbe22bef134b9974f0de4b431"
 dependencies = [
  "hex",
  "serde",
@@ -214,9 +212,8 @@ dependencies = [
 
 [[package]]
 name = "containerregistry-layout"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d0ac35280b2e4bb33e88b6b74fc5931f44bf580037cb26ff25d4ba09340169e"
+version = "0.1.2"
+source = "git+https://github.com/arcbox-labs/containerregistry-rs.git?rev=3acd38a671e50b0dbe22bef134b9974f0de4b431#3acd38a671e50b0dbe22bef134b9974f0de4b431"
 dependencies = [
  "containerregistry-image",
  "serde",
@@ -226,9 +223,8 @@ dependencies = [
 
 [[package]]
 name = "containerregistry-registry"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5a15cd85b8c53ffa0254ad4a3863280902d6449bb5dbb5fd44993f8ffc521fc"
+version = "0.1.2"
+source = "git+https://github.com/arcbox-labs/containerregistry-rs.git?rev=3acd38a671e50b0dbe22bef134b9974f0de4b431#3acd38a671e50b0dbe22bef134b9974f0de4b431"
 dependencies = [
  "containerregistry-auth",
  "containerregistry-image",

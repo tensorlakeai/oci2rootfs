@@ -14,10 +14,14 @@ zstd = "0.13"
 thiserror = "2"
 tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
-containerregistry-image = "0.1.1"
-containerregistry-layout = "0.1.1"
-containerregistry-auth = { version = "0.1.1", optional = true }
-containerregistry-registry = { version = "0.1.1", optional = true }
+# Pinned to arcbox-labs/containerregistry-rs#fix/docker-hub-aliases until
+# containerregistry-registry 0.1.2 publishes to crates.io. Fix: canonicalize
+# `docker.io` / `registry.hub.docker.com` / `registry-1.docker.io` aliases to
+# `index.docker.io` so remote pulls don't chase the marketing redirect.
+containerregistry-image = { git = "https://github.com/arcbox-labs/containerregistry-rs.git", rev = "3acd38a671e50b0dbe22bef134b9974f0de4b431" }
+containerregistry-layout = { git = "https://github.com/arcbox-labs/containerregistry-rs.git", rev = "3acd38a671e50b0dbe22bef134b9974f0de4b431" }
+containerregistry-auth = { git = "https://github.com/arcbox-labs/containerregistry-rs.git", rev = "3acd38a671e50b0dbe22bef134b9974f0de4b431", optional = true }
+containerregistry-registry = { git = "https://github.com/arcbox-labs/containerregistry-rs.git", rev = "3acd38a671e50b0dbe22bef134b9974f0de4b431", optional = true }
 arcbox-ext4.workspace = true
 
 [dev-dependencies]

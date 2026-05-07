@@ -189,9 +189,9 @@ checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 
 [[package]]
 name = "containerregistry-auth"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4f21aecc3534a2dbaf9a7c85e233eaaabe1418df34ac58afc04c65ee5ef2a0b"
+checksum = "e5e5d5e0a75abf9041460a1b7345863e14be68e3c5a229f74e20163723ad15cd"
 dependencies = [
  "base64",
  "serde",
@@ -201,9 +201,9 @@ dependencies = [
 
 [[package]]
 name = "containerregistry-image"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cac2e863640a635c9718cfcba6d131e0b172576e421dc0fc7443262f4e8016b0"
+checksum = "1199b7cfc7bced15304d6cf5db698e5221b08e0eb143c054aaf46296f0fd48a9"
 dependencies = [
  "hex",
  "serde",
@@ -214,9 +214,9 @@ dependencies = [
 
 [[package]]
 name = "containerregistry-layout"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d0ac35280b2e4bb33e88b6b74fc5931f44bf580037cb26ff25d4ba09340169e"
+checksum = "4875a5a717d943e673869dcde59f9db1a1ffeedec86f4faf43d6783d33614740"
 dependencies = [
  "containerregistry-image",
  "serde",
@@ -226,9 +226,9 @@ dependencies = [
 
 [[package]]
 name = "containerregistry-registry"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5a15cd85b8c53ffa0254ad4a3863280902d6449bb5dbb5fd44993f8ffc521fc"
+checksum = "2a88c4672c90a301d5c54d2b570ead9f8cbdc99b2612e2f96679c80623d020f8"
 dependencies = [
  "containerregistry-auth",
  "containerregistry-image",
@@ -991,7 +991,7 @@ dependencies = [
 
 [[package]]
 name = "oci2rootfs"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "arcbox-ext4",
  "containerregistry-auth",
@@ -1012,7 +1012,7 @@ dependencies = [
 
 [[package]]
 name = "oci2rootfs-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "clap",
  "oci2rootfs",

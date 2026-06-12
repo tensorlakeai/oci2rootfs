@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
 
@@ -31,8 +32,20 @@ impl Ext4Writer {
         Ok(Self { formatter })
     }
 
-    /// Create a directory, creating parent directories as needed.
-    pub fn mkdir_p(&mut self, path: &str, mode: u32) -> Result<()> {
+    /// Create a directory with ownership and extended attributes.
+    ///
+    /// Extended attributes are applied when the directory inode is first
+    /// created. If the directory already exists, only mode and ownership are
+    /// updated because arcbox-ext4 does not currently expose post-creation
+    /// xattr mutation.
+    pub fn mkdir_p_with_metadata(
+        &mut self,
+        path: &str,
+        mode: u32,
+        uid: Option<u32>,
+        gid: Option<u32>,
+        xattrs: Option<&HashMap<String, Vec<u8>>>,
+    ) -> Result<()> {
         let perm = (mode & 0o7777) as u16;
         if !self.formatter.is_dir(path) {
             self.formatter.create(
@@ -41,25 +54,30 @@ impl Ext4Writer {
                 None,
                 None,
                 None,
-                None,
-                None,
-                None,
+                uid,
+                gid,
+                xattrs,
             )?;
         } else {
-            // Directory already exists -- update permissions.
+            // Directory already exists -- update metadata we can mutate safely.
             self.formatter.set_permissions(path, perm)?;
+            if uid.is_some() || gid.is_some() {
+                self.formatter
+                    .set_owner(path, uid.unwrap_or(0), gid.unwrap_or(0))?;
+            }
         }
         Ok(())
     }
 
-    /// Write a file from a reader, creating parent directories as needed.
-    pub fn write_file(
+    /// Write a file from a reader with extended attributes, creating parent directories as needed.
+    pub fn write_file_with_xattrs(
         &mut self,
         path: &str,
         reader: &mut dyn Read,
         mode: u32,
         uid: u32,
         gid: u32,
+        xattrs: Option<&HashMap<String, Vec<u8>>>,
     ) -> Result<()> {
         let perm = (mode & 0o7777) as u16;
 
@@ -78,7 +96,7 @@ impl Ext4Writer {
             Some(reader),
             Some(uid),
             Some(gid),
-            None,
+            xattrs,
         )?;
         Ok(())
     }
@@ -143,12 +161,6 @@ impl Ext4Writer {
         Ok(())
     }
 
-    /// Set ownership on a path.
-    pub fn set_owner(&mut self, path: &str, uid: u32, gid: u32) -> Result<()> {
-        self.formatter.set_owner(path, uid, gid)?;
-        Ok(())
-    }
-
     /// Check if a path exists. Available in tests so assertions can inspect
     /// image state without exposing the underlying `Formatter`.
     #[cfg(test)]
@@ -188,8 +200,12 @@ mod tests {
     #[serial]
     fn mkdir_p_updates_permissions_on_existing_dir() {
         let (mut writer, _file) = create_writer();
-        writer.mkdir_p("/etc", 0o755).unwrap();
-        writer.mkdir_p("/etc", 0o700).unwrap();
+        writer
+            .mkdir_p_with_metadata("/etc", 0o755, None, None, None)
+            .unwrap();
+        writer
+            .mkdir_p_with_metadata("/etc", 0o700, None, None, None)
+            .unwrap();
         assert!(writer.is_dir("/etc"));
         writer.finish().unwrap();
     }
@@ -199,10 +215,10 @@ mod tests {
     fn write_file_overwrites_existing_file() {
         let (mut writer, _file) = create_writer();
         writer
-            .write_file("/f", &mut Cursor::new(b"first"), 0o644, 0, 0)
+            .write_file_with_xattrs("/f", &mut Cursor::new(b"first"), 0o644, 0, 0, None)
             .unwrap();
         writer
-            .write_file("/f", &mut Cursor::new(b"second"), 0o644, 0, 0)
+            .write_file_with_xattrs("/f", &mut Cursor::new(b"second"), 0o644, 0, 0, None)
             .unwrap();
         assert!(writer.exists("/f"));
         writer.finish().unwrap();
@@ -213,12 +229,12 @@ mod tests {
     fn write_file_overwrites_existing_symlink() {
         let (mut writer, _file) = create_writer();
         writer
-            .write_file("/target", &mut Cursor::new(b"t"), 0o644, 0, 0)
+            .write_file_with_xattrs("/target", &mut Cursor::new(b"t"), 0o644, 0, 0, None)
             .unwrap();
         writer.symlink("/target", "/link").unwrap();
         // Layer-override: a tar entry of type Regular shadows the symlink.
         writer
-            .write_file("/link", &mut Cursor::new(b"plain"), 0o644, 0, 0)
+            .write_file_with_xattrs("/link", &mut Cursor::new(b"plain"), 0o644, 0, 0, None)
             .unwrap();
         assert!(writer.exists("/link"));
         writer.finish().unwrap();
@@ -228,10 +244,14 @@ mod tests {
     #[serial]
     fn delete_recursively_removes_nested_directory() {
         let (mut writer, _file) = create_writer();
-        writer.mkdir_p("/a", 0o755).unwrap();
-        writer.mkdir_p("/a/b", 0o755).unwrap();
         writer
-            .write_file("/a/b/c.txt", &mut Cursor::new(b"c"), 0o644, 0, 0)
+            .mkdir_p_with_metadata("/a", 0o755, None, None, None)
+            .unwrap();
+        writer
+            .mkdir_p_with_metadata("/a/b", 0o755, None, None, None)
+            .unwrap();
+        writer
+            .write_file_with_xattrs("/a/b/c.txt", &mut Cursor::new(b"c"), 0o644, 0, 0, None)
             .unwrap();
 
         writer.delete("/a").unwrap();
@@ -252,13 +272,17 @@ mod tests {
     #[serial]
     fn clear_dir_leaves_directory_in_place() {
         let (mut writer, _file) = create_writer();
-        writer.mkdir_p("/cache", 0o755).unwrap();
         writer
-            .write_file("/cache/a", &mut Cursor::new(b"a"), 0o644, 0, 0)
+            .mkdir_p_with_metadata("/cache", 0o755, None, None, None)
             .unwrap();
-        writer.mkdir_p("/cache/sub", 0o755).unwrap();
         writer
-            .write_file("/cache/sub/b", &mut Cursor::new(b"b"), 0o644, 0, 0)
+            .write_file_with_xattrs("/cache/a", &mut Cursor::new(b"a"), 0o644, 0, 0, None)
+            .unwrap();
+        writer
+            .mkdir_p_with_metadata("/cache/sub", 0o755, None, None, None)
+            .unwrap();
+        writer
+            .write_file_with_xattrs("/cache/sub/b", &mut Cursor::new(b"b"), 0o644, 0, 0, None)
             .unwrap();
 
         writer.clear_dir("/cache").unwrap();

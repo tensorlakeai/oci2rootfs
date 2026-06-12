@@ -82,7 +82,6 @@
 //! # Not supported
 //!
 //! - Device nodes (`mknod`). Character/block/FIFO tar entries are skipped.
-//! - Extended attributes on tar entries or overlay2 files.
 //! - UID/GID translation. Ownership is written verbatim from the source.
 
 #![deny(missing_docs)]

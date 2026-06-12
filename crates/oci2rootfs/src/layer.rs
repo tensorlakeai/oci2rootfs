@@ -1,6 +1,7 @@
+use std::collections::HashMap;
 use std::io::Read;
 
-use tar::{Archive, EntryType};
+use tar::{Archive, Entry, EntryType};
 
 use crate::error::{Error, Result};
 use crate::ext4::Ext4Writer;
@@ -42,14 +43,28 @@ pub fn apply_layer(reader: impl Read, writer: &mut Ext4Writer) -> Result<()> {
                 let mode = entry.header().mode().unwrap_or(0o644);
                 let uid = entry.header().uid().unwrap_or(0) as u32;
                 let gid = entry.header().gid().unwrap_or(0) as u32;
-                writer.write_file(&path_str, &mut entry, mode, uid, gid)?;
+                let xattrs = collect_pax_xattrs(&mut entry, &path_str)?;
+                writer.write_file_with_xattrs(
+                    &path_str,
+                    &mut entry,
+                    mode,
+                    uid,
+                    gid,
+                    optional_xattrs(&xattrs),
+                )?;
             }
             EntryType::Directory => {
                 let mode = entry.header().mode().unwrap_or(0o755);
                 let uid = entry.header().uid().unwrap_or(0) as u32;
                 let gid = entry.header().gid().unwrap_or(0) as u32;
-                writer.mkdir_p(&path_str, mode)?;
-                writer.set_owner(&path_str, uid, gid)?;
+                let xattrs = collect_pax_xattrs(&mut entry, &path_str)?;
+                writer.mkdir_p_with_metadata(
+                    &path_str,
+                    mode,
+                    Some(uid),
+                    Some(gid),
+                    optional_xattrs(&xattrs),
+                )?;
             }
             EntryType::Symlink => {
                 let target = entry.link_name()?.ok_or_else(|| {
@@ -82,6 +97,36 @@ pub fn apply_layer(reader: impl Read, writer: &mut Ext4Writer) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn collect_pax_xattrs<R: Read>(
+    entry: &mut Entry<'_, R>,
+    owner_path: &str,
+) -> Result<HashMap<String, Vec<u8>>> {
+    let mut xattrs = HashMap::new();
+    let Some(extensions) = entry.pax_extensions()? else {
+        return Ok(xattrs);
+    };
+
+    for extension in extensions {
+        let extension = extension?;
+        let key = extension.key().map_err(|_| {
+            Error::InvalidTarPath(format!("non-UTF-8 pax key for tar entry {owner_path}"))
+        })?;
+        let Some(name) = key
+            .strip_prefix("SCHILY.xattr.")
+            .or_else(|| key.strip_prefix("LIBARCHIVE.xattr."))
+        else {
+            continue;
+        };
+        xattrs.insert(name.to_string(), extension.value_bytes().to_vec());
+    }
+
+    Ok(xattrs)
+}
+
+fn optional_xattrs(xattrs: &HashMap<String, Vec<u8>>) -> Option<&HashMap<String, Vec<u8>>> {
+    (!xattrs.is_empty()).then_some(xattrs)
 }
 
 fn reject_nul(value: &str, owner_path: &str) -> Result<()> {
@@ -182,6 +227,49 @@ mod tests {
             }
         }
         builder.into_inner().unwrap()
+    }
+
+    fn build_tar_with_pax_file(headers: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        builder
+            .append_pax_extensions(headers.iter().copied())
+            .unwrap();
+
+        let mut header = tar::Header::new_gnu();
+        header.set_size(4);
+        header.set_mode(0o755);
+        header.set_uid(0);
+        header.set_gid(0);
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "usr/bin/tool", &b"tool"[..])
+            .unwrap();
+        builder.into_inner().unwrap()
+    }
+
+    #[test]
+    fn collects_buildkit_pax_xattrs() {
+        let tar_data = build_tar_with_pax_file(&[
+            ("SCHILY.xattr.security.capability", b"capability"),
+            ("LIBARCHIVE.xattr.user.note", b"note"),
+            ("path", b"usr/bin/tool"),
+        ]);
+
+        let mut archive = Archive::new(Cursor::new(tar_data));
+        let mut entries = archive.entries().unwrap();
+        let mut entry = entries.next().unwrap().unwrap();
+        let xattrs = collect_pax_xattrs(&mut entry, "/usr/bin/tool").unwrap();
+
+        assert_eq!(
+            xattrs.get("security.capability").map(Vec::as_slice),
+            Some(&b"capability"[..])
+        );
+        assert_eq!(
+            xattrs.get("user.note").map(Vec::as_slice),
+            Some(&b"note"[..])
+        );
+        assert!(!xattrs.contains_key("path"));
     }
 
     #[test]

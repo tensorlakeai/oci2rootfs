@@ -10,6 +10,7 @@ Convert OCI container images to ext4 rootfs filesystem images.
 - **Multi-arch support** — resolve platform-specific manifests from image indexes
 - **Layer handling** — apply tar layers in order with full OCI whiteout support (`.wh.*` deletes, `.wh..wh..opq` opaque)
 - **Compression** — gzip, zstd, and uncompressed layers
+- **Extended attributes** — preserve `SCHILY.xattr.*`/`LIBARCHIVE.xattr.*` tar PAX attributes and overlay2 host xattrs
 - **Auth** — automatic credential resolution from Docker config
 
 ## Usage

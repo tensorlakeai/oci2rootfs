@@ -71,8 +71,14 @@ fn walk(
             writer.symlink(&target.to_string_lossy(), &ext4_path)?;
         } else if meta.is_dir() {
             let (mode, uid, gid) = ownership(&meta);
-            writer.mkdir_p(&ext4_path, mode)?;
-            writer.set_owner(&ext4_path, uid, gid)?;
+            let xattrs = host_xattrs(&full_path)?;
+            writer.mkdir_p_with_metadata(
+                &ext4_path,
+                mode,
+                Some(uid),
+                Some(gid),
+                optional_xattrs(&xattrs),
+            )?;
             walk(root, &full_path, writer, hardlinks)?;
         } else if meta.is_file() {
             // Hardlink detection: if we've already written a file with the
@@ -81,14 +87,39 @@ fn walk(
                 writer.link(&existing, &ext4_path)?;
             } else {
                 let (mode, uid, gid) = ownership(&meta);
+                let xattrs = host_xattrs(&full_path)?;
                 let mut file = fs::File::open(&full_path)?;
-                writer.write_file(&ext4_path, &mut file, mode, uid, gid)?;
+                writer.write_file_with_xattrs(
+                    &ext4_path,
+                    &mut file,
+                    mode,
+                    uid,
+                    gid,
+                    optional_xattrs(&xattrs),
+                )?;
             }
         }
         // Skip sockets, FIFOs, and non-whiteout device nodes.
     }
 
     Ok(())
+}
+
+fn host_xattrs(path: &Path) -> Result<HashMap<String, Vec<u8>>> {
+    let mut xattrs = HashMap::new();
+    for name in xattr::list(path)? {
+        let Some(name_str) = name.to_str() else {
+            continue;
+        };
+        if let Some(value) = xattr::get(path, &name)? {
+            xattrs.insert(name_str.to_string(), value);
+        }
+    }
+    Ok(xattrs)
+}
+
+fn optional_xattrs(xattrs: &HashMap<String, Vec<u8>>) -> Option<&HashMap<String, Vec<u8>>> {
+    (!xattrs.is_empty()).then_some(xattrs)
 }
 
 /// If `meta` has nlink > 1 and we've already seen its inode, return the

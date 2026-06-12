@@ -9,6 +9,16 @@ use crate::error::Result;
 use crate::ext4_options::Ext4Options;
 use crate::path::join;
 
+const POSIX_ACL_XATTR_VERSION: u32 = 0x0002;
+const EXT4_ACL_VERSION: u32 = 0x0001;
+
+const ACL_USER_OBJ: u16 = 0x01;
+const ACL_USER: u16 = 0x02;
+const ACL_GROUP_OBJ: u16 = 0x04;
+const ACL_GROUP: u16 = 0x08;
+const ACL_MASK: u16 = 0x10;
+const ACL_OTHER: u16 = 0x20;
+
 /// High-level ext4 image writer that wraps arcbox-ext4's Formatter.
 pub struct Ext4Writer {
     formatter: Formatter,
@@ -60,6 +70,7 @@ impl Ext4Writer {
         xattrs: Option<&HashMap<String, Vec<u8>>>,
     ) -> Result<()> {
         let perm = (mode & 0o7777) as u16;
+        let normalized_xattrs = xattrs.map(normalize_xattrs);
         if !self.formatter.is_dir(path) {
             self.formatter.create(
                 path,
@@ -69,7 +80,7 @@ impl Ext4Writer {
                 None,
                 uid,
                 gid,
-                xattrs,
+                normalized_xattrs.as_ref(),
             )?;
         } else {
             // Directory already exists -- update metadata we can mutate safely.
@@ -94,6 +105,7 @@ impl Ext4Writer {
         xattrs: Option<&HashMap<String, Vec<u8>>>,
     ) -> Result<()> {
         let perm = (mode & 0o7777) as u16;
+        let normalized_xattrs = xattrs.map(normalize_xattrs);
 
         // If an entry already exists at this path, remove it first (layer
         // override). Directories are removed recursively; anything else is
@@ -110,7 +122,7 @@ impl Ext4Writer {
             Some(reader),
             Some(uid),
             Some(gid),
-            xattrs,
+            normalized_xattrs.as_ref(),
         )?;
         Ok(())
     }
@@ -198,6 +210,52 @@ impl Ext4Writer {
         self.formatter.close()?;
         Ok(())
     }
+}
+
+fn normalize_xattrs(xattrs: &HashMap<String, Vec<u8>>) -> HashMap<String, Vec<u8>> {
+    xattrs
+        .iter()
+        .map(|(name, value)| {
+            let value = if is_posix_acl_xattr(name) {
+                acl_xattr_to_ext4_disk(value).unwrap_or_else(|| value.clone())
+            } else {
+                value.clone()
+            };
+            (name.clone(), value)
+        })
+        .collect()
+}
+
+fn is_posix_acl_xattr(name: &str) -> bool {
+    matches!(name, "system.posix_acl_access" | "system.posix_acl_default")
+}
+
+fn acl_xattr_to_ext4_disk(value: &[u8]) -> Option<Vec<u8>> {
+    if value.len() < 4 || (value.len() - 4) % 8 != 0 {
+        return None;
+    }
+    if u32::from_le_bytes(value[0..4].try_into().ok()?) != POSIX_ACL_XATTR_VERSION {
+        return None;
+    }
+
+    let mut disk = Vec::with_capacity(value.len());
+    disk.extend_from_slice(&EXT4_ACL_VERSION.to_le_bytes());
+
+    for entry in value[4..].chunks_exact(8) {
+        let tag = u16::from_le_bytes(entry[0..2].try_into().ok()?);
+        let perm = u16::from_le_bytes(entry[2..4].try_into().ok()?);
+
+        disk.extend_from_slice(&tag.to_le_bytes());
+        disk.extend_from_slice(&perm.to_le_bytes());
+
+        match tag {
+            ACL_USER_OBJ | ACL_GROUP_OBJ | ACL_MASK | ACL_OTHER => {}
+            ACL_USER | ACL_GROUP => disk.extend_from_slice(&entry[4..8]),
+            _ => return None,
+        }
+    }
+
+    Some(disk)
 }
 
 #[cfg(test)]
@@ -326,5 +384,47 @@ mod tests {
         assert!(!writer.exists("/cache/a"));
         assert!(!writer.exists("/cache/sub"));
         writer.finish().unwrap();
+    }
+
+    #[test]
+    fn converts_posix_acl_xattr_to_ext4_disk_format() {
+        let mut value = Vec::new();
+        value.extend_from_slice(&POSIX_ACL_XATTR_VERSION.to_le_bytes());
+        value.extend_from_slice(&ACL_USER_OBJ.to_le_bytes());
+        value.extend_from_slice(&0o7u16.to_le_bytes());
+        value.extend_from_slice(&u32::MAX.to_le_bytes());
+        value.extend_from_slice(&ACL_GROUP.to_le_bytes());
+        value.extend_from_slice(&0o5u16.to_le_bytes());
+        value.extend_from_slice(&4u32.to_le_bytes());
+        value.extend_from_slice(&ACL_OTHER.to_le_bytes());
+        value.extend_from_slice(&0o5u16.to_le_bytes());
+        value.extend_from_slice(&u32::MAX.to_le_bytes());
+
+        let converted = acl_xattr_to_ext4_disk(&value).expect("convert acl");
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&EXT4_ACL_VERSION.to_le_bytes());
+        expected.extend_from_slice(&ACL_USER_OBJ.to_le_bytes());
+        expected.extend_from_slice(&0o7u16.to_le_bytes());
+        expected.extend_from_slice(&ACL_GROUP.to_le_bytes());
+        expected.extend_from_slice(&0o5u16.to_le_bytes());
+        expected.extend_from_slice(&4u32.to_le_bytes());
+        expected.extend_from_slice(&ACL_OTHER.to_le_bytes());
+        expected.extend_from_slice(&0o5u16.to_le_bytes());
+
+        assert_eq!(converted, expected);
+    }
+
+    #[test]
+    fn leaves_non_acl_xattrs_unchanged() {
+        let mut xattrs = HashMap::new();
+        xattrs.insert("security.capability".to_string(), vec![1, 2, 3]);
+
+        let normalized = normalize_xattrs(&xattrs);
+
+        assert_eq!(
+            normalized.get("security.capability").map(Vec::as_slice),
+            Some(&[1, 2, 3][..])
+        );
     }
 }

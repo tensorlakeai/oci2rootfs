@@ -4,7 +4,7 @@ use std::io::Read;
 use tar::{Archive, Entry, EntryType};
 
 use crate::error::{Error, Result};
-use crate::ext4::Ext4Writer;
+use crate::ext4::{Ext4Writer, file_timestamps_from_unix_secs};
 use crate::path::{Whiteout, join, parent_of, parse_oci_whiteout, sanitize_entry_path};
 
 /// Apply a single OCI layer (tar stream) to the ext4 writer.
@@ -43,6 +43,11 @@ pub fn apply_layer(reader: impl Read, writer: &mut Ext4Writer) -> Result<()> {
                 let mode = entry.header().mode().unwrap_or(0o644);
                 let uid = entry.header().uid().unwrap_or(0) as u32;
                 let gid = entry.header().gid().unwrap_or(0) as u32;
+                let timestamps = entry
+                    .header()
+                    .mtime()
+                    .ok()
+                    .map(file_timestamps_from_unix_secs);
                 let xattrs = collect_pax_xattrs(&mut entry, &path_str)?;
                 writer.write_file_with_xattrs(
                     &path_str,
@@ -50,6 +55,7 @@ pub fn apply_layer(reader: impl Read, writer: &mut Ext4Writer) -> Result<()> {
                     mode,
                     uid,
                     gid,
+                    timestamps,
                     optional_xattrs(&xattrs),
                 )?;
             }
@@ -57,16 +63,27 @@ pub fn apply_layer(reader: impl Read, writer: &mut Ext4Writer) -> Result<()> {
                 let mode = entry.header().mode().unwrap_or(0o755);
                 let uid = entry.header().uid().unwrap_or(0) as u32;
                 let gid = entry.header().gid().unwrap_or(0) as u32;
+                let timestamps = entry
+                    .header()
+                    .mtime()
+                    .ok()
+                    .map(file_timestamps_from_unix_secs);
                 let xattrs = collect_pax_xattrs(&mut entry, &path_str)?;
                 writer.mkdir_p_with_metadata(
                     &path_str,
                     mode,
                     Some(uid),
                     Some(gid),
+                    timestamps,
                     optional_xattrs(&xattrs),
                 )?;
             }
             EntryType::Symlink => {
+                let timestamps = entry
+                    .header()
+                    .mtime()
+                    .ok()
+                    .map(file_timestamps_from_unix_secs);
                 let target = entry.link_name()?.ok_or_else(|| {
                     Error::InvalidTarPath(format!("symlink without target: {path_str}"))
                 })?;
@@ -77,7 +94,7 @@ pub fn apply_layer(reader: impl Read, writer: &mut Ext4Writer) -> Result<()> {
                     })?
                     .to_string();
                 reject_nul(&target_str, &path_str)?;
-                writer.symlink(&target_str, &path_str)?;
+                writer.symlink(&target_str, &path_str, timestamps)?;
             }
             EntryType::Link => {
                 let target = entry.link_name()?.ok_or_else(|| {

@@ -11,9 +11,11 @@ use std::path::Path;
 
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
+#[cfg(not(unix))]
+use std::time::UNIX_EPOCH;
 
 use crate::error::Result;
-use crate::ext4::Ext4Writer;
+use crate::ext4::{Ext4Writer, file_timestamps_from_unix_secs};
 use crate::path::{Whiteout, join, parent_of, parse_oci_whiteout};
 
 /// Inode key for hardlink detection: `(device, inode)`.
@@ -68,7 +70,11 @@ fn walk(
 
         if meta.is_symlink() {
             let target = fs::read_link(&full_path)?;
-            writer.symlink(&target.to_string_lossy(), &ext4_path)?;
+            writer.symlink(
+                &target.to_string_lossy(),
+                &ext4_path,
+                metadata_mtime(&meta).map(file_timestamps_from_unix_secs),
+            )?;
         } else if meta.is_dir() {
             let (mode, uid, gid) = ownership(&meta);
             let xattrs = host_xattrs(&full_path)?;
@@ -77,6 +83,7 @@ fn walk(
                 mode,
                 Some(uid),
                 Some(gid),
+                metadata_mtime(&meta).map(file_timestamps_from_unix_secs),
                 optional_xattrs(&xattrs),
             )?;
             walk(root, &full_path, writer, hardlinks)?;
@@ -95,6 +102,7 @@ fn walk(
                     mode,
                     uid,
                     gid,
+                    metadata_mtime(&meta).map(file_timestamps_from_unix_secs),
                     optional_xattrs(&xattrs),
                 )?;
             }
@@ -120,6 +128,20 @@ fn host_xattrs(path: &Path) -> Result<HashMap<String, Vec<u8>>> {
 
 fn optional_xattrs(xattrs: &HashMap<String, Vec<u8>>) -> Option<&HashMap<String, Vec<u8>>> {
     (!xattrs.is_empty()).then_some(xattrs)
+}
+
+#[cfg(unix)]
+fn metadata_mtime(meta: &fs::Metadata) -> Option<u64> {
+    u64::try_from(meta.mtime()).ok()
+}
+
+#[cfg(not(unix))]
+fn metadata_mtime(meta: &fs::Metadata) -> Option<u64> {
+    meta.modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_secs())
 }
 
 /// If `meta` has nlink > 1 and we've already seen its inode, return the
